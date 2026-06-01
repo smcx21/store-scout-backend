@@ -118,6 +118,8 @@ const STORE_DOMAINS = {
   'shiekh': 'shiekh.com', 'sole classics': 'soleclassics.com',
   'goat': 'goat.com', 'mr porter': 'mrporter.com',
   "al's sporting": 'alssportinggoods.com',
+  'stockx': 'stockx.com', 'flight club': 'flightclub.com',
+  'lyst': 'lyst.com', 'stadium goods': 'stadiumgoods.com',
 };
 
 function getStoreDomain(storeName) {
@@ -129,37 +131,28 @@ function getStoreDomain(storeName) {
 }
 
 async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
-  // Build site: operators from the actual stores in the shopping results
-  const domains = [...new Set(
-    storeNames.map(s => getStoreDomain(s)).filter(Boolean)
-  )].slice(0, 8);
-
-  const siteClause = domains.map(d => `site:${d}`).join(' OR ');
-  const searchQuery = domains.length
-    ? `${query} (${siteClause})`
-    : `${query} buy`;
-
-  console.log(`[StoreScout] Organic query: "${searchQuery}"`);
-
   const params = new URLSearchParams({
     engine:  'google',
-    q:       searchQuery,
+    q:       `${query} buy`,
     api_key: apiKey,
-    num:     '10',
+    num:     '20',
     gl:      'us',
     hl:      'en',
   });
 
+  // Build a set of domains we're looking for so we can stop early
+  const targetDomains = new Set(storeNames.map(s => getStoreDomain(s)).filter(Boolean));
+
   try {
     const res = await fetch(`https://serpapi.com/search.json?${params}`, {
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(10000),
     });
     const data = await res.json();
     const urlsByDomain = {};
     for (const result of (data.organic_results || [])) {
       try {
         const hostname = new URL(result.link).hostname.replace(/^www\./, '');
-        if (!urlsByDomain[hostname]) {
+        if (!urlsByDomain[hostname] && targetDomains.has(hostname)) {
           urlsByDomain[hostname] = result.link;
           console.log(`[StoreScout] Direct URL: ${hostname} → ${result.link}`);
         }
@@ -303,6 +296,11 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('goat'))                                      return `https://www.goat.com/search?query=${q}`;
   if (s.includes('mr porter') || s.includes('mrporter'))      return `https://www.mrporter.com/en-us/search?q=${q}`;
   if (s.includes("al's sporting") || s.includes('als sport')) return `https://www.alssportinggoods.com/search?q=${q}`;
+
+  if (s.includes('stockx'))                                    return `https://stockx.com/search?s=${q}`;
+  if (s.includes('flight club'))                               return `https://www.flightclub.com/search?q=${q}`;
+  if (s.includes('lyst'))                                      return `https://www.lyst.com/search/?q=${q}`;
+  if (s.includes('stadium goods'))                             return `https://www.stadiumgoods.com/search?q=${q}`;
 
   // Truly unknown — log it and try to guess the domain
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
