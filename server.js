@@ -55,18 +55,22 @@ app.post('/api/search', async (req, res) => {
       throw new Error(serpData.error);
     }
 
-    const results = serpData.shopping_results || [];
+    let results = serpData.shopping_results || [];
     console.log(`[StoreScout] Query: "${query}" → ${results.length} results`);
+
+    // Filter early so we don't waste site: searches on blocked/wrong-gender results
+    results = results
+      .filter(r => r.source && (r.extracted_price || parsePrice(r.price)) > 0)
+      .filter(r => !BLOCKED_STORES.some(b => (r.source || '').toLowerCase().includes(b)))
+      .filter(r => !isWrongGender(r.title, gender));
+
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
-    console.log(`[StoreScout] Stores returned: ${stores.join(', ')}`);
+    console.log(`[StoreScout] Stores: ${stores.join(', ')}`);
 
-    // Run targeted organic search using site: operators for the exact stores returned
-    const directUrlsPromise = fetchDirectUrlsBySearch(query, stores, SERPAPI_KEY);
+    // Run parallel per-store site: searches for direct product page URLs (top 6 stores)
+    const directUrlsByDomain = await fetchPerStoreDirectUrls(query, stores.slice(0, 6), SERPAPI_KEY);
 
-    const directUrlsByDomain = await directUrlsPromise;
-
-    const deals = results
-      .map(item => {
+    const deals = results.map(item => {
         const delivery = (item.delivery || '').toLowerCase();
         const freeShip = delivery.includes('free');
         const shipping = freeShip ? 0 : extractShippingCost(item.delivery);
@@ -91,10 +95,7 @@ app.post('/api/search', async (req, res) => {
           image:        item.thumbnail || null,
           sameSize:     matchesSize(item.title, size),
         };
-      })
-      .filter(d => d.storeName && d.price > 0)
-      .filter(d => !isWrongGender(d.title, gender))
-      .filter(d => !BLOCKED_STORES.some(b => d.storeName.toLowerCase().includes(b)));
+      });
 
     res.json({ deals });
 
@@ -140,37 +141,36 @@ function getStoreDomain(storeName) {
   return s.replace(/[^a-z0-9]/g, '') + '.com';
 }
 
-async function fetchDirectUrlsBySearch(query, _storeNames, apiKey) {
-  const params = new URLSearchParams({
-    engine:   'google',
-    q:        `${query} buy australia`,
-    api_key:  apiKey,
-    num:      '20',
-    gl:       'au',
-    hl:       'en',
-    location: 'Australia',
-  });
-
-  try {
-    const res = await fetch(`https://serpapi.com/search.json?${params}`, {
-      signal: AbortSignal.timeout(10000),
-    });
-    const data = await res.json();
-    const urlsByDomain = {};
-    for (const result of (data.organic_results || [])) {
-      try {
-        const hostname = new URL(result.link).hostname.replace(/^www\./, '');
-        if (!urlsByDomain[hostname]) {
-          urlsByDomain[hostname] = result.link;
-          console.log(`[StoreScout] Direct URL: ${hostname} → ${result.link}`);
-        }
-      } catch {}
+async function fetchPerStoreDirectUrls(query, storeNames, apiKey) {
+  const urlsByDomain = {};
+  await Promise.all(storeNames.map(async (storeName) => {
+    const domain = getStoreDomain(storeName);
+    if (!domain) return;
+    try {
+      const params = new URLSearchParams({
+        engine:  'google',
+        q:       `${query} site:${domain}`,
+        api_key: apiKey,
+        num:     '3',
+        gl:      'au',
+        hl:      'en',
+      });
+      const res  = await fetch(`https://serpapi.com/search.json?${params}`, {
+        signal: AbortSignal.timeout(7000),
+      });
+      const data = await res.json();
+      const hit  = (data.organic_results || []).find(r => {
+        try { return new URL(r.link).hostname.includes(domain.replace('www.', '')); } catch { return false; }
+      });
+      if (hit?.link) {
+        urlsByDomain[domain] = hit.link;
+        console.log(`[StoreScout] Direct: ${storeName} → ${hit.link}`);
+      }
+    } catch (err) {
+      console.log(`[StoreScout] Site search failed for ${storeName}: ${err.message}`);
     }
-    return urlsByDomain;
-  } catch (err) {
-    console.log(`[StoreScout] Organic search failed: ${err.message}`);
-    return {};
-  }
+  }));
+  return urlsByDomain;
 }
 
 function buildQuery(brand, title, identifier, identifierType, gender, color) {
