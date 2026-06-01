@@ -22,13 +22,13 @@ app.get('/health', (req, res) => {
 
 // ── Search ────────────────────────────────────────────────────────────
 app.post('/api/search', async (req, res) => {
-  const { identifier, identifierType, title, brand, currentPrice, size, gender } = req.body;
+  const { identifier, identifierType, title, brand, currentPrice, size, gender, color } = req.body;
 
   if (!SERPAPI_KEY) {
     return res.status(500).json({ error: 'SERPAPI_KEY not set', deals: [] });
   }
 
-  const query = buildQuery(brand, title, identifier, identifierType, gender);
+  const query = buildQuery(brand, title, identifier, identifierType, gender, color);
   if (!query.trim()) {
     return res.json({ deals: [] });
   }
@@ -165,7 +165,7 @@ async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
   }
 }
 
-function buildQuery(brand, title, identifier, identifierType, gender) {
+function buildQuery(brand, title, identifier, identifierType, gender, color) {
   // Always prefer the human-readable title — SKUs like "IH1698-100" don't search well
   let q = title || '';
   const original = q;
@@ -188,6 +188,11 @@ function buildQuery(brand, title, identifier, identifierType, gender) {
   // Prepend brand if not already in the cleaned title
   if (brand && !q.toLowerCase().includes(brand.toLowerCase())) {
     q = `${brand} ${q}`;
+  }
+
+  // Append colorway if detected and not already in the title
+  if (color && !q.toLowerCase().includes(color.toLowerCase())) {
+    q += ` ${color}`;
   }
 
   // Append gender to steer results toward the right category
