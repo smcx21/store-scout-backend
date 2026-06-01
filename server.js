@@ -55,8 +55,10 @@ app.post('/api/search', async (req, res) => {
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
     console.log(`[StoreScout] Stores returned: ${stores.join(', ')}`);
 
-    // Fetch direct product page URLs for top 5 results in parallel
-    const directLinks = await fetchDirectLinks(results.slice(0, 5), SERPAPI_KEY);
+    // Run organic Google search in parallel to get direct product page URLs
+    const directUrlsPromise = fetchDirectUrlsBySearch(query, SERPAPI_KEY);
+
+    const directUrlsByDomain = await directUrlsPromise;
 
     const deals = results
       .map(item => {
@@ -66,7 +68,8 @@ app.post('/api/search', async (req, res) => {
         const sale     = extractSalePercent(item.extensions || [], item.price, item.extracted_price);
         const store    = item.source || '';
         const extractedPrice = item.extracted_price || parsePrice(item.price);
-        const directUrl = directLinks[item.position] || null;
+        const domain   = getStoreDomain(store);
+        const directUrl = directUrlsByDomain[domain] || null;
 
         return {
           storeName:    store,
@@ -78,8 +81,8 @@ app.post('/api/search', async (req, res) => {
           verified:     isVerified(store),
           pickup:       false,
           distance:     null,
-          url:          directUrl || bestUrl(item.link, item.source, query),
-          affiliateUrl: directUrl || bestUrl(item.link, item.source, query),
+          url:          directUrl || bestUrl(item.link, store, query),
+          affiliateUrl: directUrl || bestUrl(item.link, store, query),
           image:        item.thumbnail || null,
           sameSize:     matchesSize(item.title, size),
         };
@@ -96,41 +99,65 @@ app.post('/api/search', async (req, res) => {
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────
-async function fetchDirectLinks(topResults, apiKey) {
-  const links = {};
-  await Promise.all(topResults.map(async (item) => {
-    if (!item.serpapi_product_api) {
-      console.log(`[StoreScout] No product API URL for pos ${item.position} (${item.source})`);
-      return;
+const STORE_DOMAINS = {
+  'amazon': 'amazon.com', 'walmart': 'walmart.com', 'target': 'target.com',
+  'ebay': 'ebay.com', 'zappos': 'zappos.com',
+  'foot locker': 'footlocker.com', 'footlocker': 'footlocker.com',
+  'champs': 'champssports.com', 'nike': 'nike.com', 'adidas': 'adidas.com',
+  'nordstrom rack': 'nordstromrack.com', 'nordstrom': 'nordstrom.com',
+  "macy's": 'macys.com', 'macys': 'macys.com', 'dsw': 'dsw.com',
+  'best buy': 'bestbuy.com', 'finish line': 'finishline.com',
+  "dick's": 'dickssportinggoods.com', 'dicks': 'dickssportinggoods.com',
+  '6pm': '6pm.com', 'new balance': 'newbalance.com', 'reebok': 'reebok.com',
+  'puma': 'puma.com', 'under armour': 'underarmour.com',
+  'converse': 'converse.com', 'vans': 'vans.com', 'skechers': 'skechers.com',
+  'asics': 'asics.com', 'brooks': 'brooksrunning.com', 'hoka': 'hoka.com',
+  'on running': 'on-running.com', 'etsy': 'etsy.com', 'asos': 'asos.com',
+  'zara': 'zara.com', 'dtlr': 'dtlr.com', 'hibbett': 'hibbett.com',
+  'jd sports': 'jdsports.com', 'snipes': 'snipesusa.com',
+  'shiekh': 'shiekh.com', 'sole classics': 'soleclassics.com',
+  'goat': 'goat.com', 'mr porter': 'mrporter.com',
+  "al's sporting": 'alssportinggoods.com',
+};
+
+function getStoreDomain(storeName) {
+  const s = (storeName || '').toLowerCase();
+  for (const [key, domain] of Object.entries(STORE_DOMAINS)) {
+    if (s.includes(key)) return domain;
+  }
+  return s.replace(/[^a-z0-9]/g, '') + '.com';
+}
+
+async function fetchDirectUrlsBySearch(query, apiKey) {
+  const params = new URLSearchParams({
+    engine:  'google',
+    q:       `${query} buy`,
+    api_key: apiKey,
+    num:     '10',
+    gl:      'us',
+    hl:      'en',
+  });
+
+  try {
+    const res = await fetch(`https://serpapi.com/search.json?${params}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json();
+    const urlsByDomain = {};
+    for (const result of (data.organic_results || [])) {
+      try {
+        const hostname = new URL(result.link).hostname.replace(/^www\./, '');
+        if (!urlsByDomain[hostname]) {
+          urlsByDomain[hostname] = result.link;
+          console.log(`[StoreScout] Organic: ${hostname} → ${result.link}`);
+        }
+      } catch {}
     }
-    try {
-      const url = `${item.serpapi_product_api}&api_key=${apiKey}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-      const data = await res.json();
-
-      if (data.error) {
-        console.log(`[StoreScout] Product API error for ${item.source}: ${data.error}`);
-        return;
-      }
-
-      const sellers = data.sellers_results?.online_sellers || [];
-      console.log(`[StoreScout] Product API for ${item.source}: ${sellers.length} sellers`);
-
-      const match = sellers.find(s =>
-        (s.name || '').toLowerCase().includes((item.source || '').toLowerCase())
-      ) || sellers[0];
-
-      if (match?.link && !match.link.includes('google.com')) {
-        links[item.position] = match.link;
-        console.log(`[StoreScout] Direct link for ${item.source}: ${match.link}`);
-      } else {
-        console.log(`[StoreScout] No usable link for ${item.source} — seller: ${match?.name}, link: ${match?.link}`);
-      }
-    } catch (err) {
-      console.log(`[StoreScout] Product API failed for ${item.source}: ${err.message}`);
-    }
-  }));
-  return links;
+    return urlsByDomain;
+  } catch (err) {
+    console.log(`[StoreScout] Organic search failed: ${err.message}`);
+    return {};
+  }
 }
 
 function buildQuery(brand, title, identifier, identifierType, gender) {
