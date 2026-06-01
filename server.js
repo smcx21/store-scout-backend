@@ -6,11 +6,14 @@ const PORT = process.env.PORT || 3000;
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 const VERIFIED_STORES = new Set([
-  'amazon', 'walmart', 'target', 'bestbuy', 'best buy', 'ebay', 'etsy',
-  'zappos', 'foot locker', 'footlocker', 'nike', 'adidas', 'nordstrom',
-  'macy\'s', 'macys', 'gap', 'zara', 'asos', 'dsw', 'newegg',
-  'costco', 'home depot', 'homedepot', 'wayfair', 'chewy', 'overstock',
+  'nike', 'adidas', 'foot locker', 'footlocker', 'jd sports', 'asos',
+  'the iconic', 'platypus', 'hype dc', 'rebel sport', 'culture kings',
+  'stylerunner', 'glue store', 'amazon', 'myer', 'david jones',
+  'converse', 'vans', 'puma', 'reebok', 'new balance', 'asics',
+  'hoka', 'under armour', 'goat', 'stockx',
 ]);
+
+const BLOCKED_STORES = new Set(['ebay']);
 
 app.use(cors());
 app.use(express.json());
@@ -35,12 +38,13 @@ app.post('/api/search', async (req, res) => {
 
   try {
     const params = new URLSearchParams({
-      engine:  'google_shopping',
-      q:       query,
-      api_key: SERPAPI_KEY,
-      num:     '20',
-      gl:      'us',
-      hl:      'en',
+      engine:   'google_shopping',
+      q:        query,
+      api_key:  SERPAPI_KEY,
+      num:      '20',
+      gl:       'au',
+      hl:       'en',
+      location: 'Australia',
     });
 
     const serpRes  = await fetch(`https://serpapi.com/search.json?${params}`);
@@ -89,7 +93,8 @@ app.post('/api/search', async (req, res) => {
         };
       })
       .filter(d => d.storeName && d.price > 0)
-      .filter(d => !isWrongGender(d.title, gender));
+      .filter(d => !isWrongGender(d.title, gender))
+      .filter(d => !BLOCKED_STORES.has(d.storeName.toLowerCase().split(' ')[0]));
 
     res.json({ deals });
 
@@ -101,26 +106,30 @@ app.post('/api/search', async (req, res) => {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 const STORE_DOMAINS = {
-  'amazon': 'amazon.com', 'walmart': 'walmart.com', 'target': 'target.com',
-  'ebay': 'ebay.com', 'zappos': 'zappos.com',
-  'foot locker': 'footlocker.com', 'footlocker': 'footlocker.com',
-  'champs': 'champssports.com', 'nike': 'nike.com', 'adidas': 'adidas.com',
-  'nordstrom rack': 'nordstromrack.com', 'nordstrom': 'nordstrom.com',
-  "macy's": 'macys.com', 'macys': 'macys.com', 'dsw': 'dsw.com',
-  'best buy': 'bestbuy.com', 'finish line': 'finishline.com',
-  "dick's": 'dickssportinggoods.com', 'dicks': 'dickssportinggoods.com',
-  '6pm': '6pm.com', 'new balance': 'newbalance.com', 'reebok': 'reebok.com',
-  'puma': 'puma.com', 'under armour': 'underarmour.com',
-  'converse': 'converse.com', 'vans': 'vans.com', 'skechers': 'skechers.com',
-  'asics': 'asics.com', 'brooks': 'brooksrunning.com', 'hoka': 'hoka.com',
-  'on running': 'on-running.com', 'etsy': 'etsy.com', 'asos': 'asos.com',
-  'zara': 'zara.com', 'dtlr': 'dtlr.com', 'hibbett': 'hibbett.com',
-  'jd sports': 'jdsports.com', 'snipes': 'snipesusa.com',
-  'shiekh': 'shiekh.com', 'sole classics': 'soleclassics.com',
-  'goat': 'goat.com', 'mr porter': 'mrporter.com',
-  "al's sporting": 'alssportinggoods.com',
-  'stockx': 'stockx.com', 'flight club': 'flightclub.com',
-  'lyst': 'lyst.com', 'stadium goods': 'stadiumgoods.com',
+  // Australian stores
+  'foot locker': 'footlocker.com.au', 'footlocker': 'footlocker.com.au',
+  'jd sports': 'jdsports.com.au',
+  'the iconic': 'theiconic.com.au',
+  'platypus': 'platypus.com.au',
+  'hype dc': 'hypedc.com',
+  'rebel sport': 'rebelsport.com.au', 'rebel': 'rebelsport.com.au',
+  'culture kings': 'culturekings.com.au',
+  'stylerunner': 'stylerunner.com',
+  'glue store': 'gluestore.com.au',
+  'myer': 'myer.com.au',
+  'david jones': 'davidjones.com',
+  'amazon': 'amazon.com.au',
+  'asos': 'asos.com',
+  // Global brands with AU sites
+  'nike': 'nike.com', 'adidas': 'adidas.com.au',
+  'new balance': 'newbalance.com.au', 'reebok': 'reebok.com',
+  'puma': 'au.puma.com', 'under armour': 'underarmour.com',
+  'converse': 'converse.com.au', 'vans': 'vans.com.au',
+  'skechers': 'skechers.com.au', 'asics': 'asics.com/au',
+  'hoka': 'hoka.com', 'on running': 'on-running.com',
+  // Resale
+  'goat': 'goat.com', 'stockx': 'stockx.com',
+  'flight club': 'flightclub.com', 'lyst': 'lyst.com',
 };
 
 function getStoreDomain(storeName) {
@@ -133,12 +142,13 @@ function getStoreDomain(storeName) {
 
 async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
   const params = new URLSearchParams({
-    engine:  'google',
-    q:       `${query} buy`,
-    api_key: apiKey,
-    num:     '20',
-    gl:      'us',
-    hl:      'en',
+    engine:   'google',
+    q:        `${query} buy australia`,
+    api_key:  apiKey,
+    num:      '20',
+    gl:       'au',
+    hl:       'en',
+    location: 'Australia',
   });
 
   // Build a set of domains we're looking for so we can stop early
@@ -262,58 +272,44 @@ function storeSearchUrl(storeName, query) {
   const s = (storeName || '').toLowerCase();
   const q = encodeURIComponent(query);
 
-  if (s.includes('amazon'))                                    return `https://www.amazon.com/s?k=${q}`;
-  if (s.includes('walmart'))                                   return `https://www.walmart.com/search?q=${q}`;
-  if (s.includes('target'))                                    return `https://www.target.com/s?searchTerm=${q}`;
-  if (s.includes('ebay'))                                      return `https://www.ebay.com/sch/i.html?_nkw=${q}`;
-  if (s.includes('zappos'))                                    return `https://www.zappos.com/search?term=${q}`;
-  if (s.includes('foot locker') || s.includes('footlocker'))  return `https://www.footlocker.com/search?query=${q}`;
-  if (s.includes('champs'))                                    return `https://www.champssports.com/search?query=${q}`;
-  if (s.includes('nike'))                                      return `https://www.nike.com/search?q=${q}`;
-  if (s.includes('adidas'))                                    return `https://www.adidas.com/us/search?q=${q}`;
-  if (s.includes('nordstrom rack'))                            return `https://www.nordstromrack.com/sr?keyword=${q}`;
-  if (s.includes('nordstrom'))                                 return `https://www.nordstrom.com/sr?origin=keywordsearch&keyword=${q}`;
-  if (s.includes('macy'))                                      return `https://www.macys.com/shop/search?keyword=${q}`;
-  if (s.includes('dsw'))                                       return `https://www.dsw.com/en/us/search?searchtext=${q}`;
-  if (s.includes('best buy') || s.includes('bestbuy'))        return `https://www.bestbuy.com/site/searchpage.jsp?st=${q}`;
-  if (s.includes('finish line') || s.includes('finishline'))  return `https://www.finishline.com/store/search/?query=${q}`;
-  if (s.includes("dick's") || s.includes('dicks sporting'))   return `https://www.dickssportinggoods.com/search/endeca?searchTerm=${q}`;
-  if (s.includes('6pm'))                                       return `https://www.6pm.com/search?term=${q}`;
-  if (s.includes('new balance'))                               return `https://www.newbalance.com/en-us/search/?q=${q}`;
-  if (s.includes('reebok'))                                    return `https://www.reebok.com/en-us/search?q=${q}`;
-  if (s.includes('puma'))                                      return `https://us.puma.com/en_US/search?q=${q}`;
-  if (s.includes('under armour'))                              return `https://www.underarmour.com/en-us/search?q=${q}`;
-  if (s.includes('converse'))                                  return `https://www.converse.com/en-us/search?q=${q}`;
-  if (s.includes('vans'))                                      return `https://www.vans.com/en-us/search?q=${q}`;
-  if (s.includes('skechers'))                                  return `https://www.skechers.com/en-us/search?q=${q}`;
-  if (s.includes('asics'))                                     return `https://www.asics.com/us/en-us/search?q=${q}`;
-  if (s.includes('brooks'))                                    return `https://www.brooksrunning.com/en_us/search?q=${q}`;
-  if (s.includes('hoka'))                                      return `https://www.hoka.com/en-us/search?q=${q}`;
-  if (s.includes('on running') || s.includes('on cloud'))     return `https://www.on-running.com/en-us/search?q=${q}`;
-  if (s.includes('running warehouse'))                         return `https://www.runningwarehouse.com/searchresults.html?Ntk=All&Ntt=${q}`;
-  if (s.includes('road runner'))                               return `https://www.roadrunnersports.com/search?q=${q}`;
-  if (s.includes('academy'))                                   return `https://www.academy.com/shop/catalog/search?q=${q}`;
-  if (s.includes('etsy'))                                      return `https://www.etsy.com/search?q=${q}`;
-  if (s.includes('asos'))                                      return `https://www.asos.com/us/search?q=${q}`;
-  if (s.includes('zara'))                                      return `https://www.zara.com/us/en/search?searchTerm=${q}`;
-  if (s.includes('dtlr'))                                      return `https://www.dtlr.com/search?q=${q}`;
-  if (s.includes('hibbett'))                                   return `https://www.hibbett.com/search?q=${q}`;
-  if (s.includes('jd sports'))                                 return `https://www.jdsports.com/search/?searchText=${q}`;
-  if (s.includes('snipes'))                                    return `https://www.snipesusa.com/search?q=${q}`;
-  if (s.includes('shiekh'))                                    return `https://www.shiekh.com/search/?q=${q}`;
-  if (s.includes('sole classics'))                             return `https://www.soleclassics.com/search?type=product&q=${q}`;
-  if (s.includes('goat'))                                      return `https://www.goat.com/search?query=${q}`;
-  if (s.includes('mr porter') || s.includes('mrporter'))      return `https://www.mrporter.com/en-us/search?q=${q}`;
-  if (s.includes("al's sporting") || s.includes('als sport')) return `https://www.alssportinggoods.com/search?q=${q}`;
+  // Australian stores
+  if (s.includes('foot locker') || s.includes('footlocker')) return `https://www.footlocker.com.au/search?query=${q}`;
+  if (s.includes('jd sports'))                                return `https://www.jdsports.com.au/search/?searchText=${q}`;
+  if (s.includes('the iconic'))                               return `https://www.theiconic.com.au/search/?q=${q}`;
+  if (s.includes('platypus'))                                 return `https://www.platypus.com.au/search?q=${q}`;
+  if (s.includes('hype dc'))                                  return `https://www.hypedc.com/search?type=product&q=${q}`;
+  if (s.includes('rebel sport') || s.includes('rebel'))       return `https://www.rebelsport.com.au/search/?query=${q}`;
+  if (s.includes('culture kings'))                            return `https://www.culturekings.com.au/search?q=${q}`;
+  if (s.includes('stylerunner'))                              return `https://www.stylerunner.com/search?q=${q}`;
+  if (s.includes('glue store'))                               return `https://www.gluestore.com.au/search?q=${q}`;
+  if (s.includes('myer'))                                     return `https://www.myer.com.au/search?query=${q}`;
+  if (s.includes('david jones'))                              return `https://www.davidjones.com/search?q=${q}`;
+  if (s.includes('amazon'))                                   return `https://www.amazon.com.au/s?k=${q}`;
+  if (s.includes('asos'))                                     return `https://www.asos.com/au/search?q=${q}`;
 
-  if (s.includes('stockx'))                                    return `https://stockx.com/search?s=${q}`;
-  if (s.includes('flight club'))                               return `https://www.flightclub.com/search?q=${q}`;
-  if (s.includes('lyst'))                                      return `https://www.lyst.com/search/?q=${q}`;
-  if (s.includes('stadium goods'))                             return `https://www.stadiumgoods.com/search?q=${q}`;
+  // Global brands — AU pages
+  if (s.includes('nike'))                                     return `https://www.nike.com/au/search?q=${q}`;
+  if (s.includes('adidas'))                                   return `https://www.adidas.com.au/search?q=${q}`;
+  if (s.includes('new balance'))                              return `https://www.newbalance.com.au/search/?q=${q}`;
+  if (s.includes('converse'))                                 return `https://www.converse.com.au/search?q=${q}`;
+  if (s.includes('vans'))                                     return `https://www.vans.com.au/search?q=${q}`;
+  if (s.includes('skechers'))                                 return `https://www.skechers.com.au/en/search?q=${q}`;
+  if (s.includes('puma'))                                     return `https://au.puma.com/au/en/search?q=${q}`;
+  if (s.includes('under armour'))                             return `https://www.underarmour.com/en-au/search?q=${q}`;
+  if (s.includes('asics'))                                    return `https://www.asics.com/au/en-au/search?q=${q}`;
+  if (s.includes('hoka'))                                     return `https://www.hoka.com/en-au/search?q=${q}`;
+  if (s.includes('reebok'))                                   return `https://www.reebok.com/en-au/search?q=${q}`;
+  if (s.includes('on running') || s.includes('on cloud'))     return `https://www.on-running.com/en-au/search?q=${q}`;
 
-  // Truly unknown — log it and try to guess the domain
+  // Resale (global, ship to AU)
+  if (s.includes('goat'))                                     return `https://www.goat.com/search?query=${q}`;
+  if (s.includes('stockx'))                                   return `https://stockx.com/search?s=${q}`;
+  if (s.includes('flight club'))                              return `https://www.flightclub.com/search?q=${q}`;
+  if (s.includes('lyst'))                                     return `https://www.lyst.com/search/?q=${q}`;
+
+  // Truly unknown
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
-  const domain = (storeName || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
+  const domain = (storeName || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com.au';
   return `https://www.${domain}/search?q=${q}`;
 }
 
