@@ -22,13 +22,13 @@ app.get('/health', (req, res) => {
 
 // ── Search ────────────────────────────────────────────────────────────
 app.post('/api/search', async (req, res) => {
-  const { identifier, identifierType, title, brand, currentPrice } = req.body;
+  const { identifier, identifierType, title, brand, currentPrice, size, gender } = req.body;
 
   if (!SERPAPI_KEY) {
     return res.status(500).json({ error: 'SERPAPI_KEY not set', deals: [] });
   }
 
-  const query = buildQuery(brand, title, identifier, identifierType);
+  const query = buildQuery(brand, title, identifier, identifierType, gender);
   if (!query.trim()) {
     return res.json({ deals: [] });
   }
@@ -79,9 +79,11 @@ app.post('/api/search', async (req, res) => {
           url:          storeSearchUrl(item.source, query),
           affiliateUrl: storeSearchUrl(item.source, query),
           image:        item.thumbnail || null,
+          sameSize:     matchesSize(item.title, size),
         };
       })
-      .filter(d => d.storeName && d.price > 0);
+      .filter(d => d.storeName && d.price > 0)
+      .filter(d => !isWrongGender(d.title, gender));
 
     res.json({ deals });
 
@@ -92,7 +94,7 @@ app.post('/api/search', async (req, res) => {
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────
-function buildQuery(brand, title, identifier, identifierType) {
+function buildQuery(brand, title, identifier, identifierType, gender) {
   // Always prefer the human-readable title — SKUs like "IH1698-100" don't search well
   let q = title || '';
   const original = q;
@@ -120,8 +122,31 @@ function buildQuery(brand, title, identifier, identifierType) {
     q = `${brand} ${q}`;
   }
 
+  // Append gender to steer results toward the right category
+  if (gender === 'women') q += " women's";
+  else if (gender === 'men') q += " men's";
+  else if (gender === 'kids') q += ' kids';
+
   console.log(`[StoreScout] Built query: "${q}" (from title: "${(title || '').slice(0, 50)}")`);
   return q.slice(0, 100).trim();
+}
+
+function matchesSize(resultTitle, size) {
+  if (!size || !resultTitle) return false;
+  const s = String(parseFloat(size));
+  return new RegExp(`\\b${s.replace('.', '\\.')}\\b`).test(resultTitle);
+}
+
+function isWrongGender(resultTitle, gender) {
+  if (!gender || !resultTitle) return false;
+  const t = resultTitle.toLowerCase();
+  const hasWomens = /\bwomen'?s?\b/.test(t);
+  const hasMens   = /\bmen'?s?\b/.test(t) && !hasWomens;
+  const hasKids   = /\b(kids?'?s?|youth|toddler|infant|children)\b/.test(t);
+  if (gender === 'men')   return hasWomens || hasKids;
+  if (gender === 'women') return hasMens   || hasKids;
+  if (gender === 'kids')  return hasWomens || hasMens;
+  return false;
 }
 
 function parsePrice(str) {
