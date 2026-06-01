@@ -28,7 +28,7 @@ app.post('/api/search', async (req, res) => {
     return res.status(500).json({ error: 'SERPAPI_KEY not set', deals: [] });
   }
 
-  const query = [brand, title].filter(Boolean).join(' ') || identifier || '';
+  const query = buildQuery(brand, title, identifier, identifierType);
   if (!query.trim()) {
     return res.json({ deals: [] });
   }
@@ -85,6 +85,35 @@ app.post('/api/search', async (req, res) => {
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────
+function buildQuery(brand, title, identifier, identifierType) {
+  // SKU/style codes (e.g. Nike DQ8426-100) are the best search term
+  if (identifier && identifierType === 'sku') {
+    return `${brand || ''} ${identifier}`.trim();
+  }
+
+  let q = title || identifier || '';
+
+  // Strip shoe sizes like "Size 10", "10.5", "US 10", "EU 44"
+  q = q.replace(/\b(size\s*)?\d{1,2}(\.\d)?\s*(us|uk|eu|men'?s?|women'?s?)?\b/gi, '');
+  // Strip gendered descriptors
+  q = q.replace(/\b(men'?s?|women'?s?|kids?'?s?|youth|unisex|toddler|infant|adult)\b/gi, '');
+  // Strip generic footwear words that add no identity
+  q = q.replace(/\b(running shoe|shoe|sneaker|trainer|boot|sandal|slipper)s?\b/gi, '');
+  // Strip colorways after a dash (e.g. "- White/Black/Red")
+  q = q.replace(/[-–]\s*[\w\s/]+$/, '');
+  // Strip standalone color words
+  q = q.replace(/\b(white|black|grey|gray|blue|red|green|yellow|pink|purple|orange|brown|beige|navy|silver|gold|obsidian|volt|crimson)\b/gi, '');
+  // Clean up punctuation and extra whitespace
+  q = q.replace(/[()'"]+/g, '').replace(/\s+/g, ' ').trim();
+
+  // Prepend brand if not already in the cleaned title
+  if (brand && !q.toLowerCase().includes(brand.toLowerCase())) {
+    q = `${brand} ${q}`;
+  }
+
+  return q.slice(0, 100).trim();
+}
+
 function parsePrice(str) {
   if (!str) return null;
   const n = parseFloat(String(str).replace(/[^0-9.]/g, ''));
