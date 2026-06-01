@@ -99,14 +99,23 @@ app.post('/api/search', async (req, res) => {
 async function fetchDirectLinks(topResults, apiKey) {
   const links = {};
   await Promise.all(topResults.map(async (item) => {
-    if (!item.serpapi_product_api) return;
+    if (!item.serpapi_product_api) {
+      console.log(`[StoreScout] No product API URL for pos ${item.position} (${item.source})`);
+      return;
+    }
     try {
       const url = `${item.serpapi_product_api}&api_key=${apiKey}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
       const data = await res.json();
-      const sellers = data.sellers_results?.online_sellers || [];
 
-      // Prefer the seller that matches the store name shown in results
+      if (data.error) {
+        console.log(`[StoreScout] Product API error for ${item.source}: ${data.error}`);
+        return;
+      }
+
+      const sellers = data.sellers_results?.online_sellers || [];
+      console.log(`[StoreScout] Product API for ${item.source}: ${sellers.length} sellers`);
+
       const match = sellers.find(s =>
         (s.name || '').toLowerCase().includes((item.source || '').toLowerCase())
       ) || sellers[0];
@@ -114,6 +123,8 @@ async function fetchDirectLinks(topResults, apiKey) {
       if (match?.link && !match.link.includes('google.com')) {
         links[item.position] = match.link;
         console.log(`[StoreScout] Direct link for ${item.source}: ${match.link}`);
+      } else {
+        console.log(`[StoreScout] No usable link for ${item.source} — seller: ${match?.name}, link: ${match?.link}`);
       }
     } catch (err) {
       console.log(`[StoreScout] Product API failed for ${item.source}: ${err.message}`);
@@ -135,11 +146,8 @@ function buildQuery(brand, title, identifier, identifierType, gender) {
   q = q.replace(/\b(men'?s?|women'?s?|kids?'?s?|youth|unisex|toddler|infant|adult)\b/gi, '');
   // Strip generic footwear words that add no model identity
   q = q.replace(/\b(running shoe|shoe|sneaker|trainer|boot|sandal|slipper)s?\b/gi, '');
-  // Strip colorways after a dash (e.g. "- White/Black/Red")
-  q = q.replace(/\s*[-–]\s*[\w\s/]+$/, '');
-  // Strip standalone color words
-  q = q.replace(/\b(white|black|grey|gray|blue|red|green|yellow|pink|purple|orange|brown|beige|navy|silver|gold|obsidian|volt|crimson)\b/gi, '');
-  // Clean up punctuation and extra whitespace
+  // Keep colorway — "White/Black" makes the search specific to that exact shoe
+  // Only clean up punctuation and extra whitespace
   q = q.replace(/[()'"]+/g, '').replace(/\s+/g, ' ').trim();
 
   // Safety net: if cleaning left too little, use the original title
