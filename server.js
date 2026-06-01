@@ -47,6 +47,7 @@ app.post('/api/search', async (req, res) => {
     const serpData = await serpRes.json();
 
     if (serpData.error) {
+      console.error('[StoreScout] SerpAPI returned error:', serpData.error);
       throw new Error(serpData.error);
     }
 
@@ -190,9 +191,12 @@ function buildQuery(brand, title, identifier, identifierType, gender, color) {
     q = `${brand} ${q}`;
   }
 
-  // Append colorway if detected and not already in the title
-  if (color && !q.toLowerCase().includes(color.toLowerCase())) {
-    q += ` ${color}`;
+  // Append colorway — strip slashes so "White/White" becomes "White"
+  if (color) {
+    const cleanColor = color.split('/')[0].trim();
+    if (cleanColor && !q.toLowerCase().includes(cleanColor.toLowerCase())) {
+      q += ` ${cleanColor}`;
+    }
   }
 
   // Append gender to steer results toward the right category
