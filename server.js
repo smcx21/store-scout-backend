@@ -218,8 +218,17 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('etsy'))                                      return `https://www.etsy.com/search?q=${q}`;
   if (s.includes('asos'))                                      return `https://www.asos.com/us/search?q=${q}`;
   if (s.includes('zara'))                                      return `https://www.zara.com/us/en/search?searchTerm=${q}`;
+  if (s.includes('dtlr'))                                      return `https://www.dtlr.com/search?q=${q}`;
+  if (s.includes('hibbett'))                                   return `https://www.hibbett.com/search?q=${q}`;
+  if (s.includes('jd sports'))                                 return `https://www.jdsports.com/search/?searchText=${q}`;
+  if (s.includes('snipes'))                                    return `https://www.snipesusa.com/search?q=${q}`;
+  if (s.includes('shiekh'))                                    return `https://www.shiekh.com/search/?q=${q}`;
+  if (s.includes('sole classics'))                             return `https://www.soleclassics.com/search?type=product&q=${q}`;
+  if (s.includes('goat'))                                      return `https://www.goat.com/search?query=${q}`;
+  if (s.includes('mr porter') || s.includes('mrporter'))      return `https://www.mrporter.com/en-us/search?q=${q}`;
+  if (s.includes("al's sporting") || s.includes('als sport')) return `https://www.alssportinggoods.com/search?q=${q}`;
 
-  // Unknown store — log it so we can add it, then try to guess the domain
+  // Truly unknown — log it and try to guess the domain
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
   const domain = (storeName || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
   return `https://www.${domain}/search?q=${q}`;
