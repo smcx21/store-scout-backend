@@ -67,8 +67,8 @@ app.post('/api/search', async (req, res) => {
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
     console.log(`[StoreScout] Stores: ${stores.join(', ')}`);
 
-    // Run parallel per-store site: searches for direct product page URLs (top 6 stores)
-    const directUrlsByDomain = await fetchPerStoreDirectUrls(query, stores.slice(0, 6), SERPAPI_KEY);
+    // Run parallel per-store site: searches for direct product page URLs (top 10 stores)
+    const directUrlsByDomain = await fetchPerStoreDirectUrls(query, stores.slice(0, 10), SERPAPI_KEY);
 
     const deals = results.map(item => {
         const delivery = (item.delivery || '').toLowerCase();
@@ -128,9 +128,12 @@ const STORE_DOMAINS = {
   'converse': 'converse.com.au', 'vans': 'vans.com.au',
   'skechers': 'skechers.com.au', 'asics': 'asics.com/au',
   'hoka': 'hoka.com', 'on running': 'on-running.com',
-  // Resale
+  // Resale / global shipping to AU
   'goat': 'goat.com', 'stockx': 'stockx.com',
   'flight club': 'flightclub.com', 'lyst': 'lyst.com',
+  'novelship': 'novelship.com', 'kickscrew': 'kickscrew.com',
+  'farfetch': 'farfetch.com', 'sneaker hut': 'sneakerhut.com.au',
+  'shoegrab': 'shoegrab.com.au', 'courtside': 'courtsidemelbourne.com',
 };
 
 function getStoreDomain(storeName) {
@@ -298,11 +301,17 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('reebok'))                                   return `https://www.reebok.com/en-au/search?q=${q}`;
   if (s.includes('on running') || s.includes('on cloud'))     return `https://www.on-running.com/en-au/search?q=${q}`;
 
-  // Resale (global, ship to AU)
+  // Resale / global shipping to AU
   if (s.includes('goat'))                                     return `https://www.goat.com/search?query=${q}`;
   if (s.includes('stockx'))                                   return `https://stockx.com/search?s=${q}`;
   if (s.includes('flight club'))                              return `https://www.flightclub.com/search?q=${q}`;
   if (s.includes('lyst'))                                     return `https://www.lyst.com/search/?q=${q}`;
+  if (s.includes('novelship'))                                return `https://novelship.com/browse?q=${q}`;
+  if (s.includes('kickscrew'))                                return `https://www.kickscrew.com/search?q=${q}`;
+  if (s.includes('farfetch'))                                 return `https://www.farfetch.com/au/shopping/search?q=${q}`;
+  if (s.includes('sneaker hut'))                              return `https://www.sneakerhut.com.au/search?type=product&q=${q}`;
+  if (s.includes('shoegrab'))                                 return `https://www.shoegrab.com.au/search?q=${q}`;
+  if (s.includes('courtside'))                                return `https://www.courtsidemelbourne.com/search?q=${q}`;
 
   // Truly unknown
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
