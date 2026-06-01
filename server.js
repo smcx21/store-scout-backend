@@ -41,6 +41,7 @@ app.post('/api/search', async (req, res) => {
       num:     '20',
       gl:      'us',
       hl:      'en',
+      tbs:     'p_ord:p',  // sort by price low→high, surfaces specific product listings
     });
 
     const serpRes  = await fetch(`https://serpapi.com/search.json?${params}`);
@@ -48,6 +49,12 @@ app.post('/api/search', async (req, res) => {
 
     if (serpData.error) {
       throw new Error(serpData.error);
+    }
+
+    console.log(`[StoreScout] Query: "${query}" → ${(serpData.shopping_results || []).length} results`);
+    if (serpData.shopping_results?.[0]) {
+      const s = serpData.shopping_results[0];
+      console.log(`[StoreScout] First result: ${s.source} | ${s.title} | link: ${s.product_link || s.link}`);
     }
 
     const deals = (serpData.shopping_results || [])
@@ -69,8 +76,8 @@ app.post('/api/search', async (req, res) => {
           verified:     isVerified(store),
           pickup:       false,
           distance:     null,
-          url:          item.link || '#',
-          affiliateUrl: item.link || '#',
+          url:          item.product_link || item.link || '#',
+          affiliateUrl: item.product_link || item.link || '#',
           image:        item.thumbnail || null,
         };
       })
