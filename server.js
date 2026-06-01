@@ -55,16 +55,19 @@ app.post('/api/search', async (req, res) => {
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
     console.log(`[StoreScout] Stores returned: ${stores.join(', ')}`);
 
+    // Fetch direct product page URLs for top 5 results in parallel
+    const directLinks = await fetchDirectLinks(results.slice(0, 5), SERPAPI_KEY);
+
     const deals = results
       .map(item => {
-        const price    = parsePrice(item.price);
         const delivery = (item.delivery || '').toLowerCase();
         const freeShip = delivery.includes('free');
         const shipping = freeShip ? 0 : extractShippingCost(item.delivery);
         const sale     = extractSalePercent(item.extensions || [], item.price, item.extracted_price);
         const store    = item.source || '';
-
         const extractedPrice = item.extracted_price || parsePrice(item.price);
+        const directUrl = directLinks[item.position] || null;
+
         return {
           storeName:    store,
           title:        item.title || title,
@@ -75,8 +78,8 @@ app.post('/api/search', async (req, res) => {
           verified:     isVerified(store),
           pickup:       false,
           distance:     null,
-          url:          bestUrl(item.link, item.source, query),
-          affiliateUrl: bestUrl(item.link, item.source, query),
+          url:          directUrl || bestUrl(item.link, item.source, query),
+          affiliateUrl: directUrl || bestUrl(item.link, item.source, query),
           image:        item.thumbnail || null,
           sameSize:     matchesSize(item.title, size),
         };
@@ -93,6 +96,32 @@ app.post('/api/search', async (req, res) => {
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────
+async function fetchDirectLinks(topResults, apiKey) {
+  const links = {};
+  await Promise.all(topResults.map(async (item) => {
+    if (!item.serpapi_product_api) return;
+    try {
+      const url = `${item.serpapi_product_api}&api_key=${apiKey}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const data = await res.json();
+      const sellers = data.sellers_results?.online_sellers || [];
+
+      // Prefer the seller that matches the store name shown in results
+      const match = sellers.find(s =>
+        (s.name || '').toLowerCase().includes((item.source || '').toLowerCase())
+      ) || sellers[0];
+
+      if (match?.link && !match.link.includes('google.com')) {
+        links[item.position] = match.link;
+        console.log(`[StoreScout] Direct link for ${item.source}: ${match.link}`);
+      }
+    } catch (err) {
+      console.log(`[StoreScout] Product API failed for ${item.source}: ${err.message}`);
+    }
+  }));
+  return links;
+}
+
 function buildQuery(brand, title, identifier, identifierType, gender) {
   // Always prefer the human-readable title — SKUs like "IH1698-100" don't search well
   let q = title || '';
