@@ -65,10 +65,11 @@ app.post('/api/search', async (req, res) => {
         const sale     = extractSalePercent(item.extensions || [], item.price, item.extracted_price);
         const store    = item.source || '';
 
+        const extractedPrice = item.extracted_price || parsePrice(item.price);
         return {
           storeName:    store,
           title:        item.title || title,
-          price,
+          price:        extractedPrice,
           shipping,
           freeShipping: freeShip,
           salePercent:  sale,
@@ -80,7 +81,7 @@ app.post('/api/search', async (req, res) => {
           image:        item.thumbnail || null,
         };
       })
-      .filter(d => d.price !== null && d.price > 0);
+      .filter(d => d.storeName && d.price > 0);
 
     res.json({ deals });
 
@@ -94,25 +95,32 @@ app.post('/api/search', async (req, res) => {
 function buildQuery(brand, title, identifier, identifierType) {
   // Always prefer the human-readable title — SKUs like "IH1698-100" don't search well
   let q = title || '';
+  const original = q;
 
-  // Strip shoe sizes like "Size 10", "10.5", "US 10", "EU 44"
-  q = q.replace(/\b(size\s*)?\d{1,2}(\.\d)?\s*(us|uk|eu|men'?s?|women'?s?)?\b/gi, '');
+  // Only strip numbers that are clearly sizes — require explicit size context
+  // e.g. "Size 10", "US 10.5", "UK 9", "EU 44", "10 Men's" — NOT "Pegasus 41" or "Air Max 270"
+  q = q.replace(/\b(size\s*|US\s*|UK\s*|EU\s*)\d{1,3}(\.\d)?\b/gi, '');
+  q = q.replace(/\b\d{1,2}(\.\d)?\s*(men'?s?|women'?s?|kids?'?s?)\b/gi, '');
   // Strip gendered descriptors
   q = q.replace(/\b(men'?s?|women'?s?|kids?'?s?|youth|unisex|toddler|infant|adult)\b/gi, '');
-  // Strip generic footwear words that add no identity
+  // Strip generic footwear words that add no model identity
   q = q.replace(/\b(running shoe|shoe|sneaker|trainer|boot|sandal|slipper)s?\b/gi, '');
   // Strip colorways after a dash (e.g. "- White/Black/Red")
-  q = q.replace(/[-–]\s*[\w\s/]+$/, '');
+  q = q.replace(/\s*[-–]\s*[\w\s/]+$/, '');
   // Strip standalone color words
   q = q.replace(/\b(white|black|grey|gray|blue|red|green|yellow|pink|purple|orange|brown|beige|navy|silver|gold|obsidian|volt|crimson)\b/gi, '');
   // Clean up punctuation and extra whitespace
   q = q.replace(/[()'"]+/g, '').replace(/\s+/g, ' ').trim();
+
+  // Safety net: if cleaning left too little, use the original title
+  if (q.length < 6) q = original.slice(0, 80).trim();
 
   // Prepend brand if not already in the cleaned title
   if (brand && !q.toLowerCase().includes(brand.toLowerCase())) {
     q = `${brand} ${q}`;
   }
 
+  console.log(`[StoreScout] Built query: "${q}" (from title: "${(title || '').slice(0, 50)}")`);
   return q.slice(0, 100).trim();
 }
 
