@@ -76,8 +76,8 @@ app.post('/api/search', async (req, res) => {
           verified:     isVerified(store),
           pickup:       false,
           distance:     null,
-          url:          storeSearchUrl(item.source, query),
-          affiliateUrl: storeSearchUrl(item.source, query),
+          url:          bestUrl(item.link, item.source, query),
+          affiliateUrl: bestUrl(item.link, item.source, query),
           image:        item.thumbnail || null,
           sameSize:     matchesSize(item.title, size),
         };
@@ -173,22 +173,55 @@ function isVerified(storeName) {
   return VERIFIED_STORES.has(storeName.toLowerCase());
 }
 
+function bestUrl(serpLink, storeName, query) {
+  // Use SerpAPI's link directly if it's already a real merchant URL (not a Google internal URL)
+  if (serpLink && serpLink.startsWith('https://') && !serpLink.includes('google.com')) {
+    return serpLink;
+  }
+  return storeSearchUrl(storeName, query);
+}
+
 function storeSearchUrl(storeName, query) {
   const s = (storeName || '').toLowerCase();
   const q = encodeURIComponent(query);
-  if (s.includes('amazon'))                         return `https://www.amazon.com/s?k=${q}`;
-  if (s.includes('walmart'))                        return `https://www.walmart.com/search?q=${q}`;
-  if (s.includes('target'))                         return `https://www.target.com/s?searchTerm=${q}`;
-  if (s.includes('ebay'))                           return `https://www.ebay.com/sch/i.html?_nkw=${q}`;
-  if (s.includes('zappos'))                         return `https://www.zappos.com/search?term=${q}`;
-  if (s.includes('foot locker') || s.includes('footlocker')) return `https://www.footlocker.com/search?query=${q}`;
-  if (s.includes('nike'))                           return `https://www.nike.com/search?q=${q}`;
-  if (s.includes('adidas'))                         return `https://www.adidas.com/us/search?q=${q}`;
-  if (s.includes('nordstrom'))                      return `https://www.nordstrom.com/sr?origin=keywordsearch&keyword=${q}`;
-  if (s.includes('macy'))                           return `https://www.macys.com/shop/featured/${q}`;
-  if (s.includes('dsw'))                            return `https://www.dsw.com/en/us/search?searchtext=${q}`;
-  if (s.includes('best buy') || s.includes('bestbuy')) return `https://www.bestbuy.com/site/searchpage.jsp?st=${q}`;
-  if (s.includes('finish line') || s.includes('finishline')) return `https://www.finishline.com/store/search/?query=${q}`;
+
+  if (s.includes('amazon'))                                    return `https://www.amazon.com/s?k=${q}`;
+  if (s.includes('walmart'))                                   return `https://www.walmart.com/search?q=${q}`;
+  if (s.includes('target'))                                    return `https://www.target.com/s?searchTerm=${q}`;
+  if (s.includes('ebay'))                                      return `https://www.ebay.com/sch/i.html?_nkw=${q}`;
+  if (s.includes('zappos'))                                    return `https://www.zappos.com/search?term=${q}`;
+  if (s.includes('foot locker') || s.includes('footlocker'))  return `https://www.footlocker.com/search?query=${q}`;
+  if (s.includes('champs'))                                    return `https://www.champssports.com/search?query=${q}`;
+  if (s.includes('nike'))                                      return `https://www.nike.com/search?q=${q}`;
+  if (s.includes('adidas'))                                    return `https://www.adidas.com/us/search?q=${q}`;
+  if (s.includes('nordstrom rack'))                            return `https://www.nordstromrack.com/sr?keyword=${q}`;
+  if (s.includes('nordstrom'))                                 return `https://www.nordstrom.com/sr?origin=keywordsearch&keyword=${q}`;
+  if (s.includes('macy'))                                      return `https://www.macys.com/shop/search?keyword=${q}`;
+  if (s.includes('dsw'))                                       return `https://www.dsw.com/en/us/search?searchtext=${q}`;
+  if (s.includes('best buy') || s.includes('bestbuy'))        return `https://www.bestbuy.com/site/searchpage.jsp?st=${q}`;
+  if (s.includes('finish line') || s.includes('finishline'))  return `https://www.finishline.com/store/search/?query=${q}`;
+  if (s.includes("dick's") || s.includes('dicks sporting'))   return `https://www.dickssportinggoods.com/search/endeca?searchTerm=${q}`;
+  if (s.includes('6pm'))                                       return `https://www.6pm.com/search?term=${q}`;
+  if (s.includes('new balance'))                               return `https://www.newbalance.com/en-us/search/?q=${q}`;
+  if (s.includes('reebok'))                                    return `https://www.reebok.com/en-us/search?q=${q}`;
+  if (s.includes('puma'))                                      return `https://us.puma.com/en_US/search?q=${q}`;
+  if (s.includes('under armour'))                              return `https://www.underarmour.com/en-us/search?q=${q}`;
+  if (s.includes('converse'))                                  return `https://www.converse.com/en-us/search?q=${q}`;
+  if (s.includes('vans'))                                      return `https://www.vans.com/en-us/search?q=${q}`;
+  if (s.includes('skechers'))                                  return `https://www.skechers.com/en-us/search?q=${q}`;
+  if (s.includes('asics'))                                     return `https://www.asics.com/us/en-us/search?q=${q}`;
+  if (s.includes('brooks'))                                    return `https://www.brooksrunning.com/en_us/search?q=${q}`;
+  if (s.includes('hoka'))                                      return `https://www.hoka.com/en-us/search?q=${q}`;
+  if (s.includes('on running') || s.includes('on cloud'))     return `https://www.on-running.com/en-us/search?q=${q}`;
+  if (s.includes('running warehouse'))                         return `https://www.runningwarehouse.com/searchresults.html?Ntk=All&Ntt=${q}`;
+  if (s.includes('road runner'))                               return `https://www.roadrunnersports.com/search?q=${q}`;
+  if (s.includes('academy'))                                   return `https://www.academy.com/shop/catalog/search?q=${q}`;
+  if (s.includes('etsy'))                                      return `https://www.etsy.com/search?q=${q}`;
+  if (s.includes('asos'))                                      return `https://www.asos.com/us/search?q=${q}`;
+  if (s.includes('zara'))                                      return `https://www.zara.com/us/en/search?searchTerm=${q}`;
+
+  // Unknown store — search Google for that store + product (better than generic Google Shopping)
+  if (storeName) return `https://www.google.com/search?q=${encodeURIComponent(storeName + ' ' + query)}`;
   return `https://www.google.com/search?tbm=shop&q=${q}`;
 }
 
