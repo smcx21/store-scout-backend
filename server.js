@@ -41,7 +41,6 @@ app.post('/api/search', async (req, res) => {
       num:     '20',
       gl:      'us',
       hl:      'en',
-      tbs:     'p_ord:p',  // sort by price low→high, surfaces specific product listings
     });
 
     const serpRes  = await fetch(`https://serpapi.com/search.json?${params}`);
@@ -76,8 +75,8 @@ app.post('/api/search', async (req, res) => {
           verified:     isVerified(store),
           pickup:       false,
           distance:     null,
-          url:          item.product_link || item.link || '#',
-          affiliateUrl: item.product_link || item.link || '#',
+          url:          storeSearchUrl(item.source, query),
+          affiliateUrl: storeSearchUrl(item.source, query),
           image:        item.thumbnail || null,
         };
       })
@@ -139,6 +138,25 @@ function extractSalePercent(extensions, priceStr, extracted) {
 
 function isVerified(storeName) {
   return VERIFIED_STORES.has(storeName.toLowerCase());
+}
+
+function storeSearchUrl(storeName, query) {
+  const s = (storeName || '').toLowerCase();
+  const q = encodeURIComponent(query);
+  if (s.includes('amazon'))                         return `https://www.amazon.com/s?k=${q}`;
+  if (s.includes('walmart'))                        return `https://www.walmart.com/search?q=${q}`;
+  if (s.includes('target'))                         return `https://www.target.com/s?searchTerm=${q}`;
+  if (s.includes('ebay'))                           return `https://www.ebay.com/sch/i.html?_nkw=${q}`;
+  if (s.includes('zappos'))                         return `https://www.zappos.com/search?term=${q}`;
+  if (s.includes('foot locker') || s.includes('footlocker')) return `https://www.footlocker.com/search?query=${q}`;
+  if (s.includes('nike'))                           return `https://www.nike.com/search?q=${q}`;
+  if (s.includes('adidas'))                         return `https://www.adidas.com/us/search?q=${q}`;
+  if (s.includes('nordstrom'))                      return `https://www.nordstrom.com/sr?origin=keywordsearch&keyword=${q}`;
+  if (s.includes('macy'))                           return `https://www.macys.com/shop/featured/${q}`;
+  if (s.includes('dsw'))                            return `https://www.dsw.com/en/us/search?searchtext=${q}`;
+  if (s.includes('best buy') || s.includes('bestbuy')) return `https://www.bestbuy.com/site/searchpage.jsp?st=${q}`;
+  if (s.includes('finish line') || s.includes('finishline')) return `https://www.finishline.com/store/search/?query=${q}`;
+  return `https://www.google.com/search?tbm=shop&q=${q}`;
 }
 
 app.listen(PORT, () => {
