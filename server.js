@@ -159,7 +159,7 @@ async function fetchPerStoreDirectUrls(query, storeNames, apiKey) {
         hl:      'en',
       });
       const res  = await fetch(`https://serpapi.com/search.json?${params}`, {
-        signal: AbortSignal.timeout(7000),
+        signal: AbortSignal.timeout(4000),
       });
       const data = await res.json();
       const hit  = (data.organic_results || []).find(r => {
