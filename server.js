@@ -13,7 +13,7 @@ const VERIFIED_STORES = new Set([
   'hoka', 'under armour', 'goat', 'stockx',
 ]);
 
-const BLOCKED_STORES = new Set(['ebay']);
+const BLOCKED_STORES = ['ebay', 'wish', 'aliexpress', 'temu'];
 
 app.use(cors());
 app.use(express.json());
@@ -94,7 +94,7 @@ app.post('/api/search', async (req, res) => {
       })
       .filter(d => d.storeName && d.price > 0)
       .filter(d => !isWrongGender(d.title, gender))
-      .filter(d => !BLOCKED_STORES.has(d.storeName.toLowerCase().split(' ')[0]));
+      .filter(d => !BLOCKED_STORES.some(b => d.storeName.toLowerCase().includes(b)));
 
     res.json({ deals });
 
@@ -140,7 +140,7 @@ function getStoreDomain(storeName) {
   return s.replace(/[^a-z0-9]/g, '') + '.com';
 }
 
-async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
+async function fetchDirectUrlsBySearch(query, _storeNames, apiKey) {
   const params = new URLSearchParams({
     engine:   'google',
     q:        `${query} buy australia`,
@@ -151,9 +151,6 @@ async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
     location: 'Australia',
   });
 
-  // Build a set of domains we're looking for so we can stop early
-  const targetDomains = new Set(storeNames.map(s => getStoreDomain(s)).filter(Boolean));
-
   try {
     const res = await fetch(`https://serpapi.com/search.json?${params}`, {
       signal: AbortSignal.timeout(10000),
@@ -163,7 +160,7 @@ async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
     for (const result of (data.organic_results || [])) {
       try {
         const hostname = new URL(result.link).hostname.replace(/^www\./, '');
-        if (!urlsByDomain[hostname] && targetDomains.has(hostname)) {
+        if (!urlsByDomain[hostname]) {
           urlsByDomain[hostname] = result.link;
           console.log(`[StoreScout] Direct URL: ${hostname} → ${result.link}`);
         }
