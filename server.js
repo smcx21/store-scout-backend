@@ -50,13 +50,12 @@ app.post('/api/search', async (req, res) => {
       throw new Error(serpData.error);
     }
 
-    console.log(`[StoreScout] Query: "${query}" → ${(serpData.shopping_results || []).length} results`);
-    if (serpData.shopping_results?.[0]) {
-      const s = serpData.shopping_results[0];
-      console.log(`[StoreScout] First result: ${s.source} | ${s.title} | link: ${s.product_link || s.link}`);
-    }
+    const results = serpData.shopping_results || [];
+    console.log(`[StoreScout] Query: "${query}" → ${results.length} results`);
+    const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
+    console.log(`[StoreScout] Stores returned: ${stores.join(', ')}`);
 
-    const deals = (serpData.shopping_results || [])
+    const deals = results
       .map(item => {
         const price    = parsePrice(item.price);
         const delivery = (item.delivery || '').toLowerCase();
@@ -220,9 +219,10 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('asos'))                                      return `https://www.asos.com/us/search?q=${q}`;
   if (s.includes('zara'))                                      return `https://www.zara.com/us/en/search?searchTerm=${q}`;
 
-  // Unknown store — search Google for that store + product (better than generic Google Shopping)
-  if (storeName) return `https://www.google.com/search?q=${encodeURIComponent(storeName + ' ' + query)}`;
-  return `https://www.google.com/search?tbm=shop&q=${q}`;
+  // Unknown store — log it so we can add it, then try to guess the domain
+  console.log(`[StoreScout] Unknown store: "${storeName}"`);
+  const domain = (storeName || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
+  return `https://www.${domain}/search?q=${q}`;
 }
 
 app.listen(PORT, () => {
