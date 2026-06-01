@@ -80,18 +80,14 @@ app.post('/api/search', async (req, res) => {
 
   } catch (err) {
     console.error('[StoreScout] SerpAPI error:', err.message);
-    res.status(502).json({ error: err.message, deals: [] });
+    res.json({ deals: [] });
   }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────
 function buildQuery(brand, title, identifier, identifierType) {
-  // SKU/style codes (e.g. Nike DQ8426-100) are the best search term
-  if (identifier && identifierType === 'sku') {
-    return `${brand || ''} ${identifier}`.trim();
-  }
-
-  let q = title || identifier || '';
+  // Always prefer the human-readable title — SKUs like "IH1698-100" don't search well
+  let q = title || '';
 
   // Strip shoe sizes like "Size 10", "10.5", "US 10", "EU 44"
   q = q.replace(/\b(size\s*)?\d{1,2}(\.\d)?\s*(us|uk|eu|men'?s?|women'?s?)?\b/gi, '');
