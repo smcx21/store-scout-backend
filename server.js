@@ -55,8 +55,8 @@ app.post('/api/search', async (req, res) => {
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
     console.log(`[StoreScout] Stores returned: ${stores.join(', ')}`);
 
-    // Run organic Google search in parallel to get direct product page URLs
-    const directUrlsPromise = fetchDirectUrlsBySearch(query, SERPAPI_KEY);
+    // Run targeted organic search using site: operators for the exact stores returned
+    const directUrlsPromise = fetchDirectUrlsBySearch(query, stores, SERPAPI_KEY);
 
     const directUrlsByDomain = await directUrlsPromise;
 
@@ -128,10 +128,22 @@ function getStoreDomain(storeName) {
   return s.replace(/[^a-z0-9]/g, '') + '.com';
 }
 
-async function fetchDirectUrlsBySearch(query, apiKey) {
+async function fetchDirectUrlsBySearch(query, storeNames, apiKey) {
+  // Build site: operators from the actual stores in the shopping results
+  const domains = [...new Set(
+    storeNames.map(s => getStoreDomain(s)).filter(Boolean)
+  )].slice(0, 8);
+
+  const siteClause = domains.map(d => `site:${d}`).join(' OR ');
+  const searchQuery = domains.length
+    ? `${query} (${siteClause})`
+    : `${query} buy`;
+
+  console.log(`[StoreScout] Organic query: "${searchQuery}"`);
+
   const params = new URLSearchParams({
     engine:  'google',
-    q:       `${query} buy`,
+    q:       searchQuery,
     api_key: apiKey,
     num:     '10',
     gl:      'us',
@@ -149,7 +161,7 @@ async function fetchDirectUrlsBySearch(query, apiKey) {
         const hostname = new URL(result.link).hostname.replace(/^www\./, '');
         if (!urlsByDomain[hostname]) {
           urlsByDomain[hostname] = result.link;
-          console.log(`[StoreScout] Organic: ${hostname} → ${result.link}`);
+          console.log(`[StoreScout] Direct URL: ${hostname} → ${result.link}`);
         }
       } catch {}
     }
