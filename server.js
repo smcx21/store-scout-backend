@@ -17,7 +17,11 @@ const VERIFIED_STORES = new Set([
   'hoka', 'under armour', 'goat', 'stockx',
 ]);
 
-const BLOCKED_STORES = ['ebay', 'wish', 'aliexpress', 'temu'];
+const BLOCKED_STORES = [
+  'ebay', 'wish', 'aliexpress', 'temu', 'shein', 'romwe',
+  'cash converters', 'cashaway', 'custompaperclips', 'wormtokyo',
+  'unisuperb', 'n-hype', 'nhype', 'vinted', 'depop', 'gumtree',
+];
 
 app.use(cors());
 app.use(express.json());
