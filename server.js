@@ -337,13 +337,17 @@ function convertToAUD(price, currency, rates) {
 
 function urlMatchesProduct(url, query) {
   if (!url || !query) return true;
-  const urlLower = url.toLowerCase().replace(/[-_]/g, ' ');
-  // Extract meaningful words from query (4+ chars, not stop words)
-  const stop = new Set(['nike', 'adidas', 'mens', 'womens', 'shoes', 'with', 'the', 'and', 'for', 'buy']);
+  const urlLower = url.toLowerCase(); // keep hyphens intact for style code matching
+  const stop = new Set(['nike', 'adidas', 'mens', 'womens', 'shoes', 'with', 'the', 'and', 'for', 'buy', 'size']);
   const words = query.toLowerCase().split(/\s+/).filter(w => w.length >= 4 && !stop.has(w));
   if (words.length === 0) return true;
-  // At least one key word from the query must appear in the URL
-  return words.some(w => urlLower.includes(w));
+  // Check with hyphens (e.g. "iq0288-100") and also as separate parts (e.g. "iq0288")
+  return words.some(w => {
+    if (urlLower.includes(w)) return true;
+    // Also check the main part before the hyphen (e.g. "iq0288" from "iq0288-100")
+    const parts = w.split('-');
+    return parts.length > 1 && parts.some(p => p.length >= 4 && urlLower.includes(p));
+  });
 }
 
 function isCheaper(dealPrice, currentPrice, sourceCurrency, rates) {
