@@ -94,8 +94,10 @@ app.post('/api/search', async (req, res) => {
           affiliateUrl: directUrl || bestUrl(item.link, store, query),
           image:        item.thumbnail || null,
           sameSize:     matchesSize(item.title, size),
+          hasDirectUrl: !!directUrl,
         };
-      });
+      })
+      .filter(d => d.hasDirectUrl);
 
     res.json({ deals });
 
