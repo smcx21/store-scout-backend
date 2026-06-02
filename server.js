@@ -29,7 +29,7 @@ app.get('/health', (req, res) => {
 
 // ── Search ────────────────────────────────────────────────────────────
 app.post('/api/search', async (req, res) => {
-  const { identifier, identifierType, title, brand, currentPrice, size, gender, color } = req.body;
+  const { identifier, identifierType, title, brand, currentPrice, currency: sourceCurrency, size, gender, color } = req.body;
 
   if (!SERPAPI_KEY) {
     return res.status(500).json({ error: 'SERPAPI_KEY not set', deals: [] });
@@ -120,7 +120,8 @@ app.post('/api/search', async (req, res) => {
         };
       })
       .filter(d => d.hasDirectUrl)
-      .map(d => ({ ...d, affiliateUrl: applyAffiliateTag(d.affiliateUrl || d.url, d.storeName) }));
+      .map(d => ({ ...d, affiliateUrl: applyAffiliateTag(d.affiliateUrl || d.url, d.storeName) }))
+      .filter(d => isCheaper(d.price, currentPrice, sourceCurrency, fxRates));
 
     res.json({ deals });
 
@@ -298,6 +299,13 @@ function convertToAUD(price, currency, rates) {
   const rate = rates[currency];
   if (!rate) return price;
   return Math.round(price * rate * 100) / 100;
+}
+
+function isCheaper(dealPrice, currentPrice, sourceCurrency, rates) {
+  if (!dealPrice || !currentPrice) return true; // can't compare, let it through
+  // Convert the source page's price to AUD for fair comparison
+  const currentAUD = convertToAUD(parseFloat(currentPrice), (sourceCurrency || 'AUD').toUpperCase(), rates);
+  return dealPrice < currentAUD;
 }
 
 function isSimilarProduct(resultTitle, originalTitle) {
