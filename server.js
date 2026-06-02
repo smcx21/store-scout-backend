@@ -40,10 +40,15 @@ app.post('/api/search', async (req, res) => {
     return res.json({ deals: [] });
   }
 
+  // Use style code for shopping search when available — locks results to exact colorway
+  const shoppingQuery = (identifier && identifierType === 'sku')
+    ? `${brand || ''} ${identifier}`.trim()
+    : query;
+
   try {
     const params = new URLSearchParams({
       engine:   'google_shopping',
-      q:        query,
+      q:        shoppingQuery,
       api_key:  SERPAPI_KEY,
       num:      '20',
       gl:       'au',
@@ -60,13 +65,14 @@ app.post('/api/search', async (req, res) => {
     }
 
     let results = serpData.shopping_results || [];
-    console.log(`[StoreScout] Query: "${query}" → ${results.length} results`);
+    console.log(`[StoreScout] Shopping query: "${shoppingQuery}" → ${results.length} results`);
 
     // Filter early so we don't waste site: searches on blocked/wrong-gender results
     results = results
       .filter(r => r.source && (r.extracted_price || parsePrice(r.price)) > 0)
       .filter(r => !BLOCKED_STORES.some(b => (r.source || '').toLowerCase().includes(b)))
-      .filter(r => !isWrongGender(r.title, gender));
+      .filter(r => !isWrongGender(r.title, gender))
+      .filter(r => isSimilarProduct(r.title, title));
 
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
     console.log(`[StoreScout] Stores: ${stores.join(', ')}`);
@@ -253,6 +259,25 @@ function applyAffiliateTag(url, storeName) {
     }
   } catch {}
   return url;
+}
+
+function isSimilarProduct(resultTitle, originalTitle) {
+  if (!resultTitle || !originalTitle) return true;
+
+  const clean = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const orig   = clean(originalTitle);
+  const result = clean(resultTitle);
+
+  // Build bigrams (2-word pairs) from the original title
+  const words  = orig.split(' ').filter(w => w.length >= 2);
+  const bigrams = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    bigrams.push(`${words[i]} ${words[i + 1]}`);
+  }
+  if (bigrams.length === 0) return true;
+
+  // At least one bigram from the original must appear in the result title
+  return bigrams.some(bg => result.includes(bg));
 }
 
 function matchesSize(resultTitle, size) {
