@@ -21,6 +21,9 @@ const BLOCKED_STORES = [
   'ebay', 'wish', 'aliexpress', 'temu', 'shein', 'romwe',
   'cash converters', 'cashaway', 'custompaperclips', 'wormtokyo',
   'unisuperb', 'n-hype', 'nhype', 'vinted', 'depop', 'gumtree',
+  'modesens', 'fashionnova', 'fashion nova', 'boohoo', 'boohooman',
+  'jo malone', 'shaver shop', 'qantas', 'east essence',
+  'bronze snake', 'crushprints', 'omegawalk',
 ];
 
 app.use(cors());
@@ -165,6 +168,8 @@ const STORE_DOMAINS = {
   'novelship': 'novelship.com', 'kickscrew': 'kickscrew.com',
   'farfetch': 'farfetch.com', 'sneaker hut': 'sneakerhut.com.au',
   'shoegrab': 'shoegrab.com.au', 'courtside': 'courtsidemelbourne.com',
+  'incu': 'incu.com', 'up there': 'upthere.com.au',
+  'less 17': 'less17.com.au', 'cettire': 'cettire.com',
 };
 
 function getStoreDomain(storeName) {
@@ -217,10 +222,12 @@ async function fetchPerStoreDirectUrls(query, storeNames, apiKey, size) {
       const hit  = (data.organic_results || []).find(r => {
         try { return new URL(r.link).hostname.includes(domain.replace('www.', '')); } catch { return false; }
       });
-      if (hit?.link) {
+      if (hit?.link && urlMatchesProduct(hit.link, query)) {
         const finalUrl = appendSizeToUrl(hit.link, size, domain);
         urlsByDomain[domain] = finalUrl;
         console.log(`[StoreScout] Direct: ${storeName} → ${finalUrl}`);
+      } else if (hit?.link) {
+        console.log(`[StoreScout] Rejected URL (wrong product): ${storeName} → ${hit.link}`);
       }
     } catch (err) {
       console.log(`[StoreScout] Site search failed for ${storeName}: ${err.message}`);
@@ -326,6 +333,17 @@ function convertToAUD(price, currency, rates) {
   const rate = rates[currency];
   if (!rate) return price;
   return Math.round(price * rate * 100) / 100;
+}
+
+function urlMatchesProduct(url, query) {
+  if (!url || !query) return true;
+  const urlLower = url.toLowerCase().replace(/[-_]/g, ' ');
+  // Extract meaningful words from query (4+ chars, not stop words)
+  const stop = new Set(['nike', 'adidas', 'mens', 'womens', 'shoes', 'with', 'the', 'and', 'for', 'buy']);
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length >= 4 && !stop.has(w));
+  if (words.length === 0) return true;
+  // At least one key word from the query must appear in the URL
+  return words.some(w => urlLower.includes(w));
 }
 
 function isCheaper(dealPrice, currentPrice, sourceCurrency, rates) {
@@ -448,6 +466,10 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('sneaker hut'))                              return `https://www.sneakerhut.com.au/search?type=product&q=${q}`;
   if (s.includes('shoegrab'))                                 return `https://www.shoegrab.com.au/search?q=${q}`;
   if (s.includes('courtside'))                                return `https://www.courtsidemelbourne.com/search?q=${q}`;
+  if (s.includes('incu'))                                     return `https://www.incu.com/search?q=${q}`;
+  if (s.includes('up there'))                                 return `https://www.upthere.com.au/search?q=${q}`;
+  if (s.includes('less 17'))                                  return `https://www.less17.com.au/search?q=${q}`;
+  if (s.includes('cettire'))                                  return `https://www.cettire.com/au/search?q=${q}`;
 
   // Truly unknown
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
