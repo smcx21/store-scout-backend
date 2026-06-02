@@ -56,7 +56,11 @@ app.post('/api/search', async (req, res) => {
       location: 'Australia',
     });
 
-    const serpRes  = await fetch(`https://serpapi.com/search.json?${params}`);
+    // Fetch exchange rates in parallel with shopping search
+    const [serpRes, fxRates] = await Promise.all([
+      fetch(`https://serpapi.com/search.json?${params}`),
+      fetchAUDRates(),
+    ]);
     const serpData = await serpRes.json();
 
     if (serpData.error) {
@@ -92,7 +96,9 @@ app.post('/api/search', async (req, res) => {
         const shipping = freeShip ? 0 : extractShippingCost(item.delivery);
         const sale     = extractSalePercent(item.extensions || [], item.price, item.extracted_price);
         const store    = item.source || '';
-        const extractedPrice = item.extracted_price || parsePrice(item.price);
+        const rawPrice       = item.extracted_price || parsePrice(item.price);
+        const currency       = detectCurrency(item.price, store);
+        const extractedPrice = convertToAUD(rawPrice, currency, fxRates);
         const domain   = getStoreDomain(store);
         const directUrl = directUrlsByDomain[domain] || null;
 
@@ -259,6 +265,39 @@ function applyAffiliateTag(url, storeName) {
     }
   } catch {}
   return url;
+}
+
+async function fetchAUDRates() {
+  try {
+    const res  = await fetch('https://api.frankfurter.app/latest?to=AUD', {
+      signal: AbortSignal.timeout(3000),
+    });
+    const data = await res.json();
+    // data.rates = { USD: 1.53, GBP: 1.95, EUR: 1.65, ... } meaning X foreign = Y AUD
+    return data.rates || {};
+  } catch {
+    return { USD: 1.55, GBP: 1.95, EUR: 1.65, JPY: 0.0105 }; // fallback
+  }
+}
+
+function detectCurrency(priceStr, storeName) {
+  if (!priceStr) return 'AUD';
+  const p = priceStr.toUpperCase();
+  if (p.includes('US$') || p.includes('USD'))         return 'USD';
+  if (p.includes('£')   || p.includes('GBP'))         return 'GBP';
+  if (p.includes('€')   || p.includes('EUR'))         return 'EUR';
+  if (p.includes('AU$') || p.includes('A$') || p.includes('AUD')) return 'AUD';
+  // US resale platforms price in USD even on AU
+  const usPlatforms = ['goat', 'stockx', 'flight club', 'stadium goods', 'kickscrew', 'novelship'];
+  if (usPlatforms.some(s => (storeName || '').toLowerCase().includes(s))) return 'USD';
+  return 'AUD';
+}
+
+function convertToAUD(price, currency, rates) {
+  if (!price || currency === 'AUD') return price;
+  const rate = rates[currency];
+  if (!rate) return price;
+  return Math.round(price * rate * 100) / 100;
 }
 
 function isSimilarProduct(resultTitle, originalTitle) {
