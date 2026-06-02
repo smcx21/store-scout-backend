@@ -363,9 +363,13 @@ function urlMatchesProduct(url) {
 }
 
 function isCheaper(dealPrice, currentPrice, sourceCurrency, rates) {
-  if (!dealPrice || !currentPrice) return true; // can't compare, let it through
-  // Convert the source page's price to AUD for fair comparison
+  if (!dealPrice) return false;
+  if (!currentPrice) {
+    console.log(`[StoreScout] No currentPrice detected — cannot filter by price`);
+    return true; // can't compare, let it through
+  }
   const currentAUD = convertToAUD(parseFloat(currentPrice), (sourceCurrency || 'AUD').toUpperCase(), rates);
+  console.log(`[StoreScout] Price check: deal AUD$${dealPrice} vs current ${sourceCurrency || 'AUD'}$${currentPrice} = AUD$${currentAUD.toFixed(2)} → ${dealPrice < currentAUD ? 'CHEAPER ✓' : 'MORE EXPENSIVE ✗'}`);
   return dealPrice < currentAUD;
 }
 
