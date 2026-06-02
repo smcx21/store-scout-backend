@@ -130,7 +130,7 @@ app.post('/api/search', async (req, res) => {
       })
       .filter(d => d.hasDirectUrl)
       .map(d => ({ ...d, affiliateUrl: applyAffiliateTag(d.affiliateUrl || d.url, d.storeName) }))
-      .filter(d => isCheaper(d.price, currentPrice, sourceCurrency, fxRates));
+      .filter(d => isCheaper((d.price || 0) + (d.freeShipping ? 0 : (d.shipping || 0)), currentPrice, sourceCurrency, fxRates));
 
     res.json({ deals });
 
