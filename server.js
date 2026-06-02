@@ -24,6 +24,7 @@ const BLOCKED_STORES = [
   'modesens', 'fashionnova', 'fashion nova', 'boohoo', 'boohooman',
   'jo malone', 'shaver shop', 'qantas', 'east essence',
   'bronze snake', 'crushprints', 'omegawalk',
+  "what's your size", 'geturbrick', 'reversible',
 ];
 
 app.use(cors());
@@ -170,6 +171,10 @@ const STORE_DOMAINS = {
   'shoegrab': 'shoegrab.com.au', 'courtside': 'courtsidemelbourne.com',
   'incu': 'incu.com', 'up there': 'upthere.com.au',
   'less 17': 'less17.com.au', 'cettire': 'cettire.com',
+  'ssense': 'ssense.com', 'pushas': 'pushas.com',
+  'limitededt': 'limitededt.com', 'limited edt': 'limitededt.com',
+  'the mint company': 'themintcompany.com', 'mint company': 'themintcompany.com',
+  'cruizeer': 'cruizeer.com', 'coproom': 'coproom.com.au',
 };
 
 function getStoreDomain(storeName) {
@@ -222,7 +227,7 @@ async function fetchPerStoreDirectUrls(query, storeNames, apiKey, size) {
       const hit  = (data.organic_results || []).find(r => {
         try { return new URL(r.link).hostname.includes(domain.replace('www.', '')); } catch { return false; }
       });
-      if (hit?.link && urlMatchesProduct(hit.link, query)) {
+      if (hit?.link && urlMatchesProduct(hit.link)) {
         const finalUrl = appendSizeToUrl(hit.link, size, domain);
         urlsByDomain[domain] = finalUrl;
         console.log(`[StoreScout] Direct: ${storeName} → ${finalUrl}`);
@@ -335,19 +340,19 @@ function convertToAUD(price, currency, rates) {
   return Math.round(price * rate * 100) / 100;
 }
 
-function urlMatchesProduct(url, query) {
-  if (!url || !query) return true;
-  const urlLower = url.toLowerCase(); // keep hyphens intact for style code matching
-  const stop = new Set(['nike', 'adidas', 'mens', 'womens', 'shoes', 'with', 'the', 'and', 'for', 'buy', 'size']);
-  const words = query.toLowerCase().split(/\s+/).filter(w => w.length >= 4 && !stop.has(w));
-  if (words.length === 0) return true;
-  // Check with hyphens (e.g. "iq0288-100") and also as separate parts (e.g. "iq0288")
-  return words.some(w => {
-    if (urlLower.includes(w)) return true;
-    // Also check the main part before the hyphen (e.g. "iq0288" from "iq0288-100")
-    const parts = w.split('-');
-    return parts.length > 1 && parts.some(p => p.length >= 4 && urlLower.includes(p));
-  });
+function urlMatchesProduct(url) {
+  if (!url) return false;
+  const u = url.toLowerCase();
+  // Reject URLs that are clearly category, search, or collection pages
+  const badPatterns = [
+    '/search', '/collections/', '/category/', '/categories/', '/catalog/',
+    '?q=', '?query=', 'searchterm=', 'searchtext=', 'keyword=', '_nkw=',
+    '/mens/', '/womens/', '/kids/', '/men/', '/women/',
+    '/au/w/', '/en-us/w/', '/en-gb/w/', '/en-au/w/',
+    '/sale/', '/new-arrivals/', '/brands/', '/browse',
+    '/en/category', '/shop?', 'page=2', 'page=3',
+  ];
+  return !badPatterns.some(p => u.includes(p));
 }
 
 function isCheaper(dealPrice, currentPrice, sourceCurrency, rates) {
@@ -474,6 +479,12 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('up there'))                                 return `https://www.upthere.com.au/search?q=${q}`;
   if (s.includes('less 17'))                                  return `https://www.less17.com.au/search?q=${q}`;
   if (s.includes('cettire'))                                  return `https://www.cettire.com/au/search?q=${q}`;
+  if (s.includes('ssense'))                                   return `https://www.ssense.com/en-au/search?q=${q}`;
+  if (s.includes('pushas'))                                   return `https://www.pushas.com/search?q=${q}`;
+  if (s.includes('limited edt') || s.includes('limitededt')) return `https://www.limitededt.com/search?q=${q}`;
+  if (s.includes('mint company'))                             return `https://www.themintcompany.com/en/search?q=${q}`;
+  if (s.includes('cruizeer'))                                 return `https://cruizeer.com/search?q=${q}`;
+  if (s.includes('coproom'))                                  return `https://www.coproom.com.au/search?q=${q}`;
 
   // Truly unknown
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
