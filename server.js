@@ -175,6 +175,13 @@ const STORE_DOMAINS = {
   'limitededt': 'limitededt.com', 'limited edt': 'limitededt.com',
   'the mint company': 'themintcompany.com', 'mint company': 'themintcompany.com',
   'cruizeer': 'cruizeer.com', 'coproom': 'coproom.com.au',
+  'mr porter': 'mrporter.com', 'mrporter': 'mrporter.com',
+  'highs and lows': 'highsandlows.com', 'motion lifestyle': 'motionlifestyle.com.au',
+  'usg store': 'usgstore.com.au', 'prime athletic': 'primeathletic.com.au',
+  'revolve': 'revolve.com', 'solebox': 'solebox.com',
+  'laced': 'laced.com', 'sevenstore': 'sevenstore.com',
+  'afew': 'afew-store.com', 'above the clouds': 'abovetheclouds.com',
+  'sisters': 'sistersandco.com.au',
 };
 
 function getStoreDomain(storeName) {
@@ -345,12 +352,12 @@ function urlMatchesProduct(url) {
   const u = url.toLowerCase();
   // Reject URLs that are clearly category, search, or collection pages
   const badPatterns = [
-    '/search', '/collections/', '/category/', '/categories/', '/catalog/',
+    '/search?', '/collections/', '/category/', '/categories/', '/catalog/',
     '?q=', '?query=', 'searchterm=', 'searchtext=', 'keyword=', '_nkw=',
-    '/mens/', '/womens/', '/kids/', '/men/', '/women/',
     '/au/w/', '/en-us/w/', '/en-gb/w/', '/en-au/w/',
-    '/sale/', '/new-arrivals/', '/brands/', '/browse',
+    '/sale/', '/new-arrivals/', '/brands/', '/browse?',
     '/en/category', '/shop?', 'page=2', 'page=3',
+    '/silhouette/', '/gender/', '/collections?',
   ];
   return !badPatterns.some(p => u.includes(p));
 }
@@ -485,6 +492,18 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('mint company'))                             return `https://www.themintcompany.com/en/search?q=${q}`;
   if (s.includes('cruizeer'))                                 return `https://cruizeer.com/search?q=${q}`;
   if (s.includes('coproom'))                                  return `https://www.coproom.com.au/search?q=${q}`;
+  if (s.includes('mr porter') || s.includes('mrporter'))      return `https://www.mrporter.com/en-au/search?q=${q}`;
+  if (s.includes('highs and lows'))                           return `https://www.highsandlows.com/search?q=${q}`;
+  if (s.includes('motion lifestyle'))                         return `https://www.motionlifestyle.com.au/search?q=${q}`;
+  if (s.includes('usg store'))                                return `https://www.usgstore.com.au/search?q=${q}`;
+  if (s.includes('prime athletic'))                           return `https://primeathletic.com.au/search?q=${q}`;
+  if (s.includes('revolve'))                                  return `https://www.revolve.com/search/results/?q=${q}`;
+  if (s.includes('solebox'))                                  return `https://www.solebox.com/en/search?q=${q}`;
+  if (s.includes('laced'))                                    return `https://www.laced.com/search?q=${q}`;
+  if (s.includes('sevenstore'))                               return `https://www.sevenstore.com/search?q=${q}`;
+  if (s.includes('afew'))                                     return `https://www.afew-store.com/en/search?q=${q}`;
+  if (s.includes('above the clouds'))                         return `https://www.abovetheclouds.com/search?q=${q}`;
+  if (s.includes('sisters'))                                  return `https://www.sistersandco.com.au/search?q=${q}`;
 
   // Truly unknown
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
