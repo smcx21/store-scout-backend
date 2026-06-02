@@ -67,8 +67,14 @@ app.post('/api/search', async (req, res) => {
     const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
     console.log(`[StoreScout] Stores: ${stores.join(', ')}`);
 
+    // Use style code for site searches when available — much more specific than title
+    const siteQuery = (identifier && identifierType === 'sku')
+      ? `${brand || ''} ${identifier}`.trim()
+      : query;
+    console.log(`[StoreScout] Site search query: "${siteQuery}"`);
+
     // Run parallel per-store site: searches for direct product page URLs (top 10 stores)
-    const directUrlsByDomain = await fetchPerStoreDirectUrls(query, stores.slice(0, 10), SERPAPI_KEY);
+    const directUrlsByDomain = await fetchPerStoreDirectUrls(siteQuery, stores.slice(0, 10), SERPAPI_KEY);
 
     const deals = results.map(item => {
         const delivery = (item.delivery || '').toLowerCase();
