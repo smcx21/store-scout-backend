@@ -3,7 +3,11 @@ const cors    = require('cors');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const SERPAPI_KEY = process.env.SERPAPI_KEY;
+const SERPAPI_KEY    = process.env.SERPAPI_KEY;
+const AMAZON_TAG     = process.env.AMAZON_TAG     || null;
+const SHAREASALE_ID  = process.env.SHAREASALE_ID  || null;
+const CJ_ID          = process.env.CJ_ID          || null;
+const RAKUTEN_ID     = process.env.RAKUTEN_ID      || null;
 
 const VERIFIED_STORES = new Set([
   'nike', 'adidas', 'foot locker', 'footlocker', 'jd sports', 'asos',
@@ -103,7 +107,8 @@ app.post('/api/search', async (req, res) => {
           hasDirectUrl: !!directUrl,
         };
       })
-      .filter(d => d.hasDirectUrl);
+      .filter(d => d.hasDirectUrl)
+      .map(d => ({ ...d, affiliateUrl: applyAffiliateTag(d.affiliateUrl || d.url, d.storeName) }));
 
     res.json({ deals });
 
@@ -224,6 +229,30 @@ function buildQuery(brand, title, identifier, identifierType, gender, color) {
 
   console.log(`[StoreScout] Built query: "${q}" (from title: "${(title || '').slice(0, 50)}")`);
   return q.slice(0, 100).trim();
+}
+
+function applyAffiliateTag(url, storeName) {
+  if (!url) return url;
+  try {
+    const u   = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const s    = (storeName || '').toLowerCase();
+
+    if (host.includes('amazon.') && AMAZON_TAG) {
+      u.searchParams.set('tag', AMAZON_TAG);
+      return u.toString();
+    }
+    if (SHAREASALE_ID && (s.includes('culture kings') || s.includes('hype dc') || s.includes('stylerunner') || s.includes('glue store'))) {
+      return `https://www.shareasale.com/r.cfm?u=${SHAREASALE_ID}&urllink=${encodeURIComponent(url)}`;
+    }
+    if (CJ_ID && (s.includes('foot locker') || s.includes('nike') || s.includes('adidas') || s.includes('converse') || s.includes('vans'))) {
+      return `https://www.anrdoezrs.net/click-${CJ_ID}?url=${encodeURIComponent(url)}`;
+    }
+    if (RAKUTEN_ID && (s.includes('reebok') || s.includes('puma') || s.includes('new balance') || s.includes('asics'))) {
+      return `https://click.linksynergy.com/deeplink?id=${RAKUTEN_ID}&murl=${encodeURIComponent(url)}`;
+    }
+  } catch {}
+  return url;
 }
 
 function matchesSize(resultTitle, size) {
