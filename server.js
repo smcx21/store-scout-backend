@@ -92,7 +92,7 @@ app.post('/api/search', async (req, res) => {
     console.log(`[StoreScout] Site search query: "${siteQuery}"`);
 
     // Run parallel per-store site: searches for direct product page URLs (top 10 stores)
-    const directUrlsByDomain = await fetchPerStoreDirectUrls(siteQuery, stores.slice(0, 10), SERPAPI_KEY);
+    const directUrlsByDomain = await fetchPerStoreDirectUrls(siteQuery, stores.slice(0, 10), SERPAPI_KEY, size);
 
     const deals = results.map(item => {
         const delivery = (item.delivery || '').toLowerCase();
@@ -121,6 +121,7 @@ app.post('/api/search', async (req, res) => {
           image:        item.thumbnail || null,
           sameSize:     matchesSize(item.title, size),
           hasDirectUrl: !!directUrl,
+          priceVaries:  isResalePlatform(getStoreDomain(store)),
         };
       })
       .filter(d => d.hasDirectUrl)
@@ -174,15 +175,36 @@ function getStoreDomain(storeName) {
   return s.replace(/[^a-z0-9]/g, '') + '.com';
 }
 
-async function fetchPerStoreDirectUrls(query, storeNames, apiKey) {
+const RESALE_PLATFORMS = ['goat.com', 'stockx.com', 'flightclub.com', 'novelship.com', 'kickscrew.com'];
+
+function isResalePlatform(domain) {
+  return RESALE_PLATFORMS.some(p => domain.includes(p));
+}
+
+function appendSizeToUrl(url, size, domain) {
+  if (!size || !url) return url;
+  try {
+    const u = new URL(url);
+    if (domain.includes('goat.com') || domain.includes('stockx.com') ||
+        domain.includes('flightclub.com') || domain.includes('novelship.com')) {
+      u.searchParams.set('size', size);
+      return u.toString();
+    }
+  } catch {}
+  return url;
+}
+
+async function fetchPerStoreDirectUrls(query, storeNames, apiKey, size) {
   const urlsByDomain = {};
   await Promise.all(storeNames.map(async (storeName) => {
     const domain = getStoreDomain(storeName);
     if (!domain) return;
     try {
+      // For resale platforms, include size in the search query for accurate pricing
+      const sizeClause = size && isResalePlatform(domain) ? ` US${size}` : '';
       const params = new URLSearchParams({
         engine:  'google',
-        q:       `${query} site:${domain}`,
+        q:       `${query}${sizeClause} site:${domain}`,
         api_key: apiKey,
         num:     '3',
         gl:      'au',
@@ -196,8 +218,9 @@ async function fetchPerStoreDirectUrls(query, storeNames, apiKey) {
         try { return new URL(r.link).hostname.includes(domain.replace('www.', '')); } catch { return false; }
       });
       if (hit?.link) {
-        urlsByDomain[domain] = hit.link;
-        console.log(`[StoreScout] Direct: ${storeName} → ${hit.link}`);
+        const finalUrl = appendSizeToUrl(hit.link, size, domain);
+        urlsByDomain[domain] = finalUrl;
+        console.log(`[StoreScout] Direct: ${storeName} → ${finalUrl}`);
       }
     } catch (err) {
       console.log(`[StoreScout] Site search failed for ${storeName}: ${err.message}`);
