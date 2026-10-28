@@ -19,9 +19,9 @@ const BARCODE_TYPES     = new Set(['gtin', 'gtin8', 'gtin12', 'gtin13', 'gtin14'
 const MAX_LINK_LOOKUPS  = parseInt(process.env.MAX_LINK_LOOKUPS || '0', 10);
 // Google product pages to open per search (each is one paid search). They add more
 // stores and give direct product links; 0 turns them off.
-// Off by default: in Australia most product pages only list one store, so it's cheaper to
-// fetch a store's direct link when it's clicked (/api/link) than for every store upfront.
-const MAX_PRODUCT_PAGES = parseInt(process.env.MAX_PRODUCT_PAGES || '0', 10);
+// Only listings Google marks as sold by several stores are opened: one search returns up
+// to 13 stores, each with a direct link. Other listings get their link on click (/api/link).
+const MAX_PRODUCT_PAGES = parseInt(process.env.MAX_PRODUCT_PAGES || '2', 10);
 const TOO_EXPENSIVE_RATIO = 1.35; // hide listings over 1.35× the normal price (resale sites run ~1.1–1.3×)
 const TOO_CHEAP_RATIO     = 0.6; // flag unknown stores under 0.6× the normal price
 const CACHE_TTL_MS      = 12 * 60 * 60 * 1000;
@@ -31,12 +31,20 @@ const SHAREASALE_ID  = process.env.SHAREASALE_ID  || null;
 const CJ_ID          = process.env.CJ_ID          || null;
 const RAKUTEN_ID     = process.env.RAKUTEN_ID      || null;
 
+// Well-known retailers (matched anywhere in Google's store name, e.g. "Nike Official")
 const VERIFIED_STORES = new Set([
-  'nike', 'adidas', 'foot locker', 'footlocker', 'jd sports', 'asos',
-  'the iconic', 'platypus', 'hype dc', 'rebel sport', 'culture kings',
-  'stylerunner', 'glue store', 'amazon', 'myer', 'david jones',
-  'converse', 'vans', 'puma', 'reebok', 'new balance', 'asics',
-  'hoka', 'under armour', 'goat', 'stockx',
+  // Sneaker & sports stores
+  'nike', 'adidas', 'foot locker', 'footlocker', 'jd sports', 'platypus', 'hype dc',
+  'rebel', 'culture kings', 'stylerunner', 'glue store', 'athlete\'s foot', 'athletes foot',
+  'sportsmart', 'sneakerboy', 'up there', 'incu', 'subtype', 'novelship', 'kickscrew',
+  // Brands' own stores
+  'converse', 'vans', 'puma', 'reebok', 'new balance', 'asics', 'hoka', 'under armour',
+  'skechers', 'brooks', 'saucony', 'on running', 'salomon', 'birkenstock', 'dr. martens',
+  // Department & general stores
+  'the iconic', 'myer', 'david jones', 'amazon', 'kmart', 'big w', 'target australia',
+  'catch.com', 'asos', 'next australia', 'zalando',
+  // Resale & fashion marketplaces
+  'goat', 'stockx', 'farfetch', 'ssense', 'mytheresa', 'end. clothing', 'cettire', 'revolve',
 ]);
 
 const BLOCKED_STORES = [
@@ -68,9 +76,10 @@ app.use('/api', (req, res, next) => {
 
 // ── Search ────────────────────────────────────────────────────────────
 app.post('/api/search', async (req, res) => {
-  const { identifier, identifierType, title, brand, currentPrice, currency: sourceCurrency, size, gender, color } = req.body;
+  const { identifier, identifierType, brand, currentPrice, currency: sourceCurrency, size, gender, color } = req.body;
   // Older extension versions only send `identifier`, so fall back to it
   const styleCode = req.body.styleCode || (identifierType === 'sku' ? identifier : null);
+  const title     = cleanTitle(req.body.title, styleCode);
   const barcode   = normalizeBarcode(req.body.barcode || (BARCODE_TYPES.has(identifierType) ? identifier : null));
 
   if (!SERPAPI_KEY) {
@@ -136,7 +145,13 @@ app.post('/api/search', async (req, res) => {
 
     const fxRates = await fxPromise;
 
-    let deals = cheapestPerStore(storeOffers.concat(results).map(item => toDeal(item, title, size, fxRates, product)));
+    // An opened page's store listings are more precise than Google's one-line summary
+    // (e.g. a "Men's Shoes" summary turned out to be the Pale Ivory colourway), so they
+    // replace the summary rather than sit beside it
+    const opened = new Set(pages);
+    const items = storeOffers.concat(results.filter(r => !opened.has(r)));
+
+    let deals = cheapestPerStore(items.map(item => toDeal(item, title, size, fxRates, product)));
 
     // Only look up direct product pages for the cheapest few stores without one —
     // each lookup is another paid search. A store's address must be known (not guessed)
@@ -211,14 +226,14 @@ async function shoppingSearch(q) {
   return serpData.shopping_results || [];
 }
 
-// The matching results worth opening Google's product page for: exact before likely,
-// big trusted stores first (their product pages list the most other stores), one per product
+// The matching results worth opening Google's product page for: ones sold by several
+// stores, exact before likely, big trusted stores first, one per product
 function pickProductPages(results, product, max) {
   const rank = { exact: 0, likely: 1 };
   const seen = new Set();
   return results
     .map((r, i) => ({ r, i, level: matchLevel(r.title, product) }))
-    .filter(x => x.r.immersive_product_page_token && x.level !== 'similar')
+    .filter(x => x.r.immersive_product_page_token && x.r.multiple_sources && x.level !== 'similar')
     .sort((a, b) => rank[a.level] - rank[b.level]
       || isVerified(b.r.source) - isVerified(a.r.source)
       || a.i - b.i)
@@ -235,9 +250,10 @@ function pickProductPages(results, product, max) {
 // Every store on Google's product page, shaped like a shopping result
 async function productPageOffers(result) {
   const params = new URLSearchParams({
-    engine:     'google_immersive_product',
-    page_token: result.immersive_product_page_token,
-    api_key:    SERPAPI_KEY,
+    engine:      'google_immersive_product',
+    page_token:  result.immersive_product_page_token,
+    more_stores: 'true',   // up to 13 stores instead of 3–5, same cost
+    api_key:     SERPAPI_KEY,
     gl:         'au',
     hl:         'en',
   });
@@ -279,7 +295,19 @@ const GENERIC_WORDS = new Set([
   'the', 'and', 'for', 'with', 'shoe', 'shoes', 'sneaker', 'sneakers', 'trainer', 'trainers',
   'men', 'mens', 'women', 'womens', 'kids', 'unisex', 'running', 'basketball', 'lifestyle',
   'size', 'pair', 'new', 'sale', 'black', 'white',
+  'retro', 'original', 'originals', 'classic',   // stores often drop these from the name
 ]);
+
+// Lower-case words of a title. Words stuck together by the store are split first:
+// "White With BlackCLEARANCE" → white, with, black, clearance
+function titleWords(s) {
+  return String(s || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
 
 // Does a result look like the same product? It must name the brand (if known) and share
 // at least `minShare` of the product name's distinctive words — model numbers count,
@@ -287,13 +315,17 @@ const GENERIC_WORDS = new Set([
 // doesn't match "Air Force 1 '07 Patent Leather".
 function mentionsProduct(resultTitle, originalTitle, brand, minShare = 0.5) {
   if (!resultTitle || !originalTitle) return true;
-  const words = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+  const words = s => titleWords(s);
   const result = new Set(words(resultTitle));
   const brandWords = brand ? words(brand) : [];
-  if (brandWords.length && !brandWords.every(w => result.has(w))) return false;
+  // Many stores leave the brand out ("Dunk Low 'Black White / Panda'"), so a missing brand
+  // is fine as long as the model name matches strongly
+  const brandMissing = brandWords.length && !brandWords.every(w => result.has(w));
+  if (brandMissing) minShare = Math.max(minShare, 0.75);
+  // Colours aren't part of the model name ("550 White Green") — matchLevel checks them separately
   const distinctive = [...new Set(words(originalTitle))]
-    .filter(w => (/^\d+$/.test(w) || w.length >= 3) && !GENERIC_WORDS.has(w) && !brandWords.includes(w));
-  if (distinctive.length === 0) return true;
+    .filter(w => (/^\d+$/.test(w) || w.length >= 3) && !GENERIC_WORDS.has(w) && !COLOUR_WORDS.has(w) && !brandWords.includes(w));
+  if (distinctive.length === 0) return !brandMissing;
   // Model numbers must all be there ("Sabrina 4" isn't "Sabrina 3"). Digits are read out of
   // any word, so "AF1" still counts as having the "1".
   const resultNumbers = new Set((resultTitle.match(/\d+/g) || []).map(n => n.replace(/^0+(?=\d)/, '')));
@@ -321,34 +353,80 @@ const COLOUR_WORDS = new Set([
   'black', 'white', 'grey', 'gray', 'red', 'blue', 'green', 'yellow', 'orange', 'pink',
   'purple', 'brown', 'beige', 'cream', 'navy', 'silver', 'gold', 'tan', 'bone', 'sail',
   'volt', 'anthracite', 'olive', 'burgundy', 'teal', 'khaki', 'ivory', 'multi', 'multicolour',
+  'indigo', 'maroon', 'coffee', 'mint', 'lilac', 'lavender', 'magenta', 'turquoise', 'coral',
+  'charcoal', 'sand', 'wheat', 'chocolate', 'mocha', 'rose', 'peach', 'lime', 'aqua', 'crimson',
+  // Nike/adidas colour names that stand for a colour on their own
+  'royal', 'obsidian', 'pumice', 'cement', 'smoke', 'platinum', 'cobalt', 'pine', 'sky',
+  'emerald', 'scarlet', 'phantom', 'sapphire', 'ruby', 'jade', 'mauve', 'plum', 'rust',
 ]);
 // Words that mean a different version of the same shoe (if the original doesn't have them)
 const VARIANT_WORDS = new Set([
   'premium', 'prm', 'lx', 'lv8', 'se', 'mid', 'high', 'retro', 'og', 'sp', 'qs', 'plus',
   'utility', 'gtx', 'goretex', 'shadow', 'flyknit', 'react', 'next', 'craft', 'crater', 'jewel',
   'edge', 'platform', 'pltform', 'luxe', 'fontanka', 'wb', 'vintage',
-  'gs', 'ps', 'td',   // kids' sizes (grade school, pre-school, toddler)
+  'gs', 'ps', 'td', 'junior', 'juniors', 'kid', 'kids', 'youth', 'toddler', 'toddlers',
+  'infant', 'infants', 'baby', 'preschool', 'grade',   // kids' versions
+  'x', 'collab',                                        // collaborations: "Samba x CLOT"
+  'sb', 'xlg',                                          // Nike SB (skate), adidas XLG (chunky sole)
+  'golf', 'sl', 'spikeless', 'slide', 'slides', 'sandal', 'sandals', 'boot', 'boots',
+  'mule', 'mules', 'clog', 'clogs',                     // a different kind of shoe with the same name
 ]);
+
+// Colourway nicknames stores use instead of colours
+const COLOUR_NICKNAMES = {
+  panda: ['white', 'black'],
+  bred:  ['black', 'red'],
+};
+
+// A listing naming a style code that isn't ours ("…'Cloud White Black Gum' IH6820")
+// is a different colourway or version, even if the words match
+function hasOtherStyleCode(resultTitle, styleCode) {
+  if (!styleCode || !resultTitle) return false;
+  const ours = styleCode.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const codes = resultTitle.match(/\b[A-Z]{1,3}\d{3,5}(?:-\d{3}|[A-Z0-9]{0,4})\b/gi) || [];
+  return codes.some(c => {
+    const code = c.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return code !== ours
+      && /\d{4}/.test(code)                                  // real codes have 4+ digits in a row
+      && Math.abs(code.length - ours.length) <= 2
+      && !/^(us|uk|eu|au|size|sz)\d/i.test(code);           // not a size like "US10"
+  });
+}
 
 // 'exact'   = same model and colourway (style code in the title, or name + colour match)
 // 'likely'  = same model, but the listing doesn't say the colour
 // 'similar' = same shoe line, but a different colour/version
 function matchLevel(resultTitle, { title, brand, color, styleCode }) {
   if (containsStyleCode(resultTitle, styleCode)) return 'exact';
-  const words = s => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean));
+  const words = s => new Set(titleWords(s));
   const result = words(resultTitle);
   const original = words(title);
 
   if ([...result].some(w => VARIANT_WORDS.has(w) && !original.has(w))) return 'similar';
+  if (hasOtherStyleCode(resultTitle, styleCode)) return 'similar';
   // Without a style code, every distinctive word of the name must be there
   if (!mentionsProduct(resultTitle, title, brand, 1)) return 'similar';
 
-  // Colour: naming a colour we don't have means a different colourway.
-  // Listings (or pages) that don't state a colour can't be confirmed either way.
-  const ours   = new Set([...words(color), ...[...original].filter(w => COLOUR_WORDS.has(w))]);
-  const theirs = [...result].filter(w => COLOUR_WORDS.has(w));
+  // Colour: naming a colour we don't have means a different colourway, and so does
+  // leaving out our main colour ("Samba OG - Black" isn't the white Samba, even though
+  // the white one has black stripes). Listings without any colour can't be confirmed.
+  const ourColours = [...String(color || '').toLowerCase().matchAll(/[a-z]+/g)].map(m => m[0])
+    .concat([...original].filter(w => COLOUR_WORDS.has(w)));
+  const ours    = new Set(ourColours);
+  const primary = ourColours.find(w => COLOUR_WORDS.has(w));
+  const theirs  = [...new Set([...result].flatMap(w => COLOUR_NICKNAMES[w] || (COLOUR_WORDS.has(w) ? [w] : [])))];
   if (theirs.some(w => !ours.has(w))) return 'similar';
   if (!ours.size || !theirs.length) return 'likely';
+  if (primary && !theirs.includes(primary)) return 'similar';
+  // A nickname for our colourway ("Panda") settles it, whatever order the colours are in
+  const nickname = [...result].some(w => COLOUR_NICKNAMES[w]?.every(c => ours.has(c)));
+  if (!nickname) {
+    // Stores list the main colour first: "Samba OG Black White Gum" is the black Samba
+    if (theirs.length >= 2 && theirs[0] !== primary) return 'similar';
+    // Only our main colour named, for a two-colour shoe: can't tell ("550 White" for white/green)
+    const ourMain = [...new Set(ourColours.filter(w => COLOUR_WORDS.has(w)))];
+    if (theirs.length === 1 && ourMain.length >= 2) return 'likely';
+  }
   return 'exact';
 }
 
@@ -479,7 +557,7 @@ function setCached(key, data) {
 const STORE_DOMAINS = {
   // Australian stores
   'foot locker': 'footlocker.com.au', 'footlocker': 'footlocker.com.au',
-  'jd sports': 'jdsports.com.au',
+  'jd sports': 'jd-sports.com.au',
   'the iconic': 'theiconic.com.au',
   'platypus': 'platypus.com.au',
   'hype dc': 'hypedc.com',
@@ -591,6 +669,20 @@ async function fetchPerStoreDirectUrls(query, storeNames, apiKey, size) {
   return urlsByDomain;
 }
 
+// Store titles carry noise that wrecks searching and matching, e.g.
+// "Men Nike Air Force 1 `07 Patent Leather White / White IV2857 100": a style code split
+// into words (which then had to appear in every result) and an odd quote mark.
+function cleanTitle(raw, styleCode) {
+  let t = String(raw || '').replace(/[`´‘’]/g, "'").replace(/[“”]/g, '"');
+  if (styleCode) {
+    const [a, b] = styleCode.split('-');
+    t = t.replace(new RegExp(`\\b${a}[\\s-]?${b || ''}\\b`, 'i'), ' ');
+  }
+  t = t.replace(/\b[A-Z]{1,3}\d{4,5}[\s-]\d{3}\b/g, ' ');            // other Nike-style codes
+  t = t.replace(/\b(\w+)(\s*\/\s*\1\b)+/gi, '$1');                  // "White / White" → "White"
+  return t.replace(/\s*[|–-]\s*$/, '').replace(/\s+/g, ' ').trim();
+}
+
 function buildQuery(brand, title, identifier, identifierType, gender, color) {
   // Always prefer the human-readable title — SKUs like "IH1698-100" don't search well
   let q = title || '';
@@ -616,12 +708,13 @@ function buildQuery(brand, title, identifier, identifierType, gender, color) {
     q = `${brand} ${q}`;
   }
 
-  // Append colorway — strip slashes so "White/White" becomes "White"
+  // Append the two main colours ("White/Black" → "White Black"). Only the first steered
+  // the Panda Dunk search to white-and-blue Dunks.
   if (color) {
-    const cleanColor = color.split('/')[0].trim();
-    if (cleanColor && !q.toLowerCase().includes(cleanColor.toLowerCase())) {
-      q += ` ${cleanColor}`;
-    }
+    const main = [...new Set((color.toLowerCase().match(/[a-z]+/g) || []).filter(w => COLOUR_WORDS.has(w)))]
+      .slice(0, 2)
+      .filter(w => !q.toLowerCase().includes(w));
+    if (main.length) q += ' ' + main.map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
   }
 
   // Append gender to steer results toward the right category
@@ -761,7 +854,7 @@ function storeSearchUrl(storeName, query) {
 
   // Australian stores
   if (s.includes('foot locker') || s.includes('footlocker')) return `https://www.footlocker.com.au/search?query=${q}`;
-  if (s.includes('jd sports'))                                return `https://www.jdsports.com.au/search/?searchText=${q}`;
+  if (s.includes('jd sports'))                                return `https://www.jd-sports.com.au/search?q=${q}`;
   if (s.includes('the iconic'))                               return `https://www.theiconic.com.au/search/?q=${q}`;
   if (s.includes('platypus'))                                 return `https://www.platypus.com.au/search?q=${q}`;
   if (s.includes('hype dc'))                                  return `https://www.hypedc.com/search?type=product&q=${q}`;
@@ -836,4 +929,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, buildQuery, normalizeBarcode, mentionsProduct, matchLevel, containsStyleCode, filterResults, toDeal, cheapestPerStore, easeScore, withCurrentPrice, isVerified, isMerchantUrl };
+module.exports = { app, buildQuery, cleanTitle, normalizeBarcode, mentionsProduct, matchLevel, containsStyleCode, filterResults, toDeal, cheapestPerStore, easeScore, withCurrentPrice, isVerified, isMerchantUrl };
