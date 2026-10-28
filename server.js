@@ -1,9 +1,26 @@
 const express = require('express');
 const cors    = require('cors');
+const fs      = require('fs');
+const path    = require('path');
+
+// Read settings from backend/.env (see .env.example)
+try { process.loadEnvFile(path.join(__dirname, '.env')); } catch {}
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+// Only this PC can reach the server unless HOST is changed (e.g. 0.0.0.0 when deploying)
+const HOST = process.env.HOST || '127.0.0.1';
 const SERPAPI_KEY    = process.env.SERPAPI_KEY;
+const API_TOKEN      = process.env.API_TOKEN      || null;
+
+const BARCODE_TYPES     = new Set(['gtin', 'gtin8', 'gtin12', 'gtin13', 'gtin14', 'upc', 'ean']);
+// Extra paid searches to find direct product pages. Off by default: SerpAPI's web search
+// is often too slow to be worth it, and store search pages work without it.
+const MAX_LINK_LOOKUPS  = parseInt(process.env.MAX_LINK_LOOKUPS || '0', 10);
+const TOO_EXPENSIVE_RATIO = 1.35; // hide listings over 1.35× the normal price (resale sites run ~1.1–1.3×)
+const TOO_CHEAP_RATIO     = 0.6; // flag unknown stores under 0.6× the normal price
+const CACHE_TTL_MS      = 12 * 60 * 60 * 1000;
+const CACHE_FILE        = process.env.CACHE_FILE || path.join(__dirname, 'cache.json');
 const AMAZON_TAG     = process.env.AMAZON_TAG     || null;
 const SHAREASALE_ID  = process.env.SHAREASALE_ID  || null;
 const CJ_ID          = process.env.CJ_ID          || null;
@@ -35,12 +52,24 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', serpapi: !!SERPAPI_KEY });
 });
 
+// ── Optional shared token ─────────────────────────────────────────────
+// If API_TOKEN is set, the extension must send the same value (Settings page).
+app.use('/api', (req, res, next) => {
+  if (API_TOKEN && req.get('x-storescout-token') !== API_TOKEN) {
+    return res.status(401).json({ error: 'Bad or missing token', deals: [] });
+  }
+  next();
+});
+
 // ── Search ────────────────────────────────────────────────────────────
 app.post('/api/search', async (req, res) => {
   const { identifier, identifierType, title, brand, currentPrice, currency: sourceCurrency, size, gender, color } = req.body;
+  // Older extension versions only send `identifier`, so fall back to it
+  const styleCode = req.body.styleCode || (identifierType === 'sku' ? identifier : null);
+  const barcode   = normalizeBarcode(req.body.barcode || (BARCODE_TYPES.has(identifierType) ? identifier : null));
 
   if (!SERPAPI_KEY) {
-    return res.status(500).json({ error: 'SERPAPI_KEY not set', deals: [] });
+    return res.status(500).json({ error: 'SERPAPI_KEY not set — add it to backend/.env', deals: [] });
   }
 
   const query = buildQuery(brand, title, identifier, identifierType, gender, color);
@@ -48,97 +77,303 @@ app.post('/api/search', async (req, res) => {
     return res.json({ deals: [] });
   }
 
-  // Use style code for shopping search when available — locks results to exact colorway
-  const shoppingQuery = (identifier && identifierType === 'sku')
-    ? `${brand || ''} ${identifier}`.trim()
-    : query;
+  // Same product + size + gender → reuse the earlier answer instead of paying for new searches
+  const cacheKey = [styleCode || barcode || query, color, size, gender].join('|').toLowerCase();
+  const cached = getCached(cacheKey);
+  if (cached) {
+    console.log(`[StoreScout] Cache hit: ${cacheKey}`);
+    return res.json(withCurrentPrice(cached, currentPrice, sourceCurrency));
+  }
+
+  // The same product asked for twice at once (e.g. the popup reopened) shares one search
+  if (inFlight.has(cacheKey)) console.log(`[StoreScout] Joining search already running: ${cacheKey}`);
+  else inFlight.set(cacheKey, runSearch().finally(() => inFlight.delete(cacheKey)));
 
   try {
-    const params = new URLSearchParams({
-      engine:   'google_shopping',
-      q:        shoppingQuery,
-      api_key:  SERPAPI_KEY,
-      num:      '20',
-      gl:       'au',
-      hl:       'en',
-      location: 'Australia',
-    });
-
-    // Fetch exchange rates in parallel with shopping search
-    const [serpRes, fxRates] = await Promise.all([
-      fetch(`https://serpapi.com/search.json?${params}`),
-      fetchAUDRates(),
-    ]);
-    const serpData = await serpRes.json();
-
-    if (serpData.error) {
-      console.error('[StoreScout] SerpAPI returned error:', serpData.error);
-      throw new Error(serpData.error);
-    }
-
-    let results = serpData.shopping_results || [];
-    console.log(`[StoreScout] Shopping query: "${shoppingQuery}" → ${results.length} results`);
-
-    // Filter early so we don't waste site: searches on blocked/wrong-gender results
-    results = results
-      .filter(r => r.source && (r.extracted_price || parsePrice(r.price)) > 0)
-      .filter(r => !BLOCKED_STORES.some(b => (r.source || '').toLowerCase().includes(b)))
-      .filter(r => !isWrongGender(r.title, gender))
-      .filter(r => isSimilarProduct(r.title, title));
-
-    const stores = [...new Set(results.map(r => r.source).filter(Boolean))];
-    console.log(`[StoreScout] Stores: ${stores.join(', ')}`);
-
-    // Use style code for site searches when available — much more specific than title
-    const siteQuery = (identifier && identifierType === 'sku')
-      ? `${brand || ''} ${identifier}`.trim()
-      : query;
-    console.log(`[StoreScout] Site search query: "${siteQuery}"`);
-
-    // Run parallel per-store site: searches for direct product page URLs (top 10 stores)
-    const directUrlsByDomain = await fetchPerStoreDirectUrls(siteQuery, stores.slice(0, 10), SERPAPI_KEY, size);
-
-    const deals = results.map(item => {
-        const delivery = (item.delivery || '').toLowerCase();
-        const freeShip = delivery.includes('free');
-        const shipping = freeShip ? 0 : extractShippingCost(item.delivery);
-        const sale     = extractSalePercent(item.extensions || [], item.price, item.extracted_price);
-        const store    = item.source || '';
-        const rawPrice       = item.extracted_price || parsePrice(item.price);
-        const currency       = detectCurrency(item.price, store);
-        const extractedPrice = convertToAUD(rawPrice, currency, fxRates);
-        const domain   = getStoreDomain(store);
-        const directUrl = directUrlsByDomain[domain] || null;
-
-        return {
-          storeName:    store,
-          title:        item.title || title,
-          price:        extractedPrice,
-          shipping,
-          freeShipping: freeShip,
-          salePercent:  sale,
-          verified:     isVerified(store),
-          pickup:       false,
-          distance:     null,
-          url:          directUrl || bestUrl(item.link, store, query),
-          affiliateUrl: directUrl || bestUrl(item.link, store, query),
-          image:        item.thumbnail || null,
-          sameSize:     matchesSize(item.title, size),
-          hasDirectUrl: !!directUrl,
-          priceVaries:  isResalePlatform(getStoreDomain(store)),
-        };
-      })
-      .filter(d => d.hasDirectUrl)
-      .map(d => ({ ...d, affiliateUrl: applyAffiliateTag(d.affiliateUrl || d.url, d.storeName) }))
-      .filter(d => isCheaper((d.price || 0) + (d.freeShipping ? 0 : (d.shipping || 0)), currentPrice, sourceCurrency, fxRates));
-
-    res.json({ deals });
-
+    const payload = await inFlight.get(cacheKey);
+    res.json(withCurrentPrice(payload, currentPrice, sourceCurrency));
   } catch (err) {
     console.error('[StoreScout] SerpAPI error:', err.message);
-    res.json({ deals: [] });
+    res.status(502).json({ error: err.message, deals: [] });
+  }
+
+  async function runSearch() {
+    const fxPromise = fetchAUDRates();
+    let searchesUsed = 0;
+    const shop = q => { searchesUsed++; return shoppingSearch(q); };
+
+    const product = { title, brand, color, styleCode };
+    const keep = r => containsStyleCode(r.title, styleCode) || mentionsProduct(r.title, title, brand, 0.5);
+    const countExact = rs => rs.filter(r => matchLevel(r.title, product) === 'exact').length;
+
+    // Style code (exact model + colourway), else barcode, pins down the exact product;
+    // name + colour finds the rest. Both run at once — SerpAPI can take 20s per search.
+    // Google can mix in unrelated items, so every result must also name the product.
+    const exactQuery = styleCode ? `${brand || ''} ${styleCode}`.trim() : barcode;
+    const [exactRaw, titleRaw] = await Promise.all([
+      exactQuery ? shop(exactQuery) : [],
+      shop(query),
+    ]);
+    const exactResults = filterResults(exactRaw, gender).filter(keep);
+    const titleResults = filterResults(titleRaw, gender).filter(keep);
+    if (exactQuery) console.log(`[StoreScout] Exact query "${exactQuery}" → ${exactResults.length} usable, ${countExact(exactResults)} exact`);
+    console.log(`[StoreScout] Title query "${query}" → ${titleResults.length} usable, ${countExact(titleResults)} exact`);
+    const results = exactResults.concat(titleResults);
+
+    const fxRates = await fxPromise;
+
+    let deals = cheapestPerStore(results.map(item => toDeal(item, title, size, fxRates, product)));
+
+    // Only look up direct product pages for the cheapest few stores without one —
+    // each lookup is another paid search. A store's address must be known (not guessed)
+    // or the search finds nothing. The rest link to the store's own search page.
+    const needLinks = deals
+      .filter(d => !d.hasDirectUrl && knownDomain(d.storeName))
+      .sort((a, b) => a.total - b.total)
+      .slice(0, MAX_LINK_LOOKUPS);
+    const linkQuery = exactQuery && styleCode ? exactQuery : query;
+    searchesUsed += needLinks.length;
+    const directUrlsByDomain = await fetchPerStoreDirectUrls(linkQuery, needLinks.map(d => d.storeName), SERPAPI_KEY, size);
+
+    deals = deals.map(d => {
+      const directUrl = d.hasDirectUrl ? d.url : directUrlsByDomain[getStoreDomain(d.storeName)];
+      // Unknown stores: Google's page for this exact offer beats a guessed store search
+      const url = directUrl
+        || (knownDomain(d.storeName) ? storeSearchUrl(d.storeName, query) : d.googleUrl)
+        || storeSearchUrl(d.storeName, query);
+      const deal = { ...d, url, hasDirectUrl: !!directUrl };
+      return { ...deal, affiliateUrl: applyAffiliateTag(url, d.storeName), ...easeScore(deal) };
+    });
+
+    const payload = { deals, fxRates, searchesUsed };
+    setCached(cacheKey, payload);
+    console.log(`[StoreScout] ${deals.length} deals, ${searchesUsed} SerpAPI searches used`);
+    return payload;
   }
 });
+
+const inFlight = new Map();
+
+async function shoppingSearch(q) {
+  const params = new URLSearchParams({
+    engine:   'google_shopping',
+    q,
+    api_key:  SERPAPI_KEY,
+    num:      '20',
+    gl:       'au',
+    hl:       'en',
+    location: 'Australia',
+  });
+  const serpRes  = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(60000) });
+  const serpData = await serpRes.json();
+  if (serpData.error) {
+    // "no results" is a normal answer, not a failure
+    if (/hasn't returned any results/i.test(serpData.error)) return [];
+    console.error('[StoreScout] SerpAPI returned error:', serpData.error);
+    throw new Error(serpData.error);
+  }
+  return serpData.shopping_results || [];
+}
+
+// Product pages often pad barcodes to 14 digits ("00198966169739"), which Google
+// doesn't recognise. Strip the padding back to the 12-digit UPC / 13-digit EAN.
+function normalizeBarcode(raw) {
+  let code = String(raw || '').replace(/\D/g, '');
+  while (code.length > 12 && code.startsWith('0')) code = code.slice(1);
+  return code.length >= 8 && code.length <= 14 ? code : null;
+}
+
+const GENERIC_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'shoe', 'shoes', 'sneaker', 'sneakers', 'trainer', 'trainers',
+  'men', 'mens', 'women', 'womens', 'kids', 'unisex', 'running', 'basketball', 'lifestyle',
+  'size', 'pair', 'new', 'sale', 'black', 'white',
+]);
+
+// Does a result look like the same product? It must name the brand (if known) and share
+// at least `minShare` of the product name's distinctive words — model numbers count,
+// so "Sabrina 4 Nationals" matches "Sabrina 4 'Count Ionescu'" but "Air Max 270"
+// doesn't match "Air Force 1 '07 Patent Leather".
+function mentionsProduct(resultTitle, originalTitle, brand, minShare = 0.5) {
+  if (!resultTitle || !originalTitle) return true;
+  const words = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+  const result = new Set(words(resultTitle));
+  const brandWords = brand ? words(brand) : [];
+  if (brandWords.length && !brandWords.every(w => result.has(w))) return false;
+  const distinctive = [...new Set(words(originalTitle))]
+    .filter(w => (/^\d+$/.test(w) || w.length >= 3) && !GENERIC_WORDS.has(w) && !brandWords.includes(w));
+  if (distinctive.length === 0) return true;
+  // Model numbers must all be there ("Sabrina 4" isn't "Sabrina 3"). Digits are read out of
+  // any word, so "AF1" still counts as having the "1".
+  const resultNumbers = new Set((resultTitle.match(/\d+/g) || []).map(n => n.replace(/^0+(?=\d)/, '')));
+  const ourNumbers = distinctive.filter(w => /^\d+$/.test(w)).map(n => n.replace(/^0+(?=\d)/, ''));
+  if (!ourNumbers.every(n => resultNumbers.has(n))) return false;
+  const matched = distinctive.filter(w => result.has(w) || (/^\d+$/.test(w))).length;
+  return matched / distinctive.length >= minShare;
+}
+
+function filterResults(results, gender) {
+  return results
+    .filter(r => r.source && (r.extracted_price || parsePrice(r.price)) > 0)
+    .filter(r => !BLOCKED_STORES.some(b => r.source.toLowerCase().includes(b)))
+    .filter(r => !isWrongGender(r.title, gender));
+}
+
+// "IX7058-001" also matches "ix7058 001" or "IX7058001" in a store's title
+function containsStyleCode(resultTitle, styleCode) {
+  if (!resultTitle || !styleCode) return false;
+  const squash = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return squash(resultTitle).includes(squash(styleCode));
+}
+
+const COLOUR_WORDS = new Set([
+  'black', 'white', 'grey', 'gray', 'red', 'blue', 'green', 'yellow', 'orange', 'pink',
+  'purple', 'brown', 'beige', 'cream', 'navy', 'silver', 'gold', 'tan', 'bone', 'sail',
+  'volt', 'anthracite', 'olive', 'burgundy', 'teal', 'khaki', 'ivory', 'multi', 'multicolour',
+]);
+// Words that mean a different version of the same shoe (if the original doesn't have them)
+const VARIANT_WORDS = new Set([
+  'premium', 'prm', 'lx', 'lv8', 'se', 'mid', 'high', 'retro', 'og', 'sp', 'qs', 'plus',
+  'utility', 'gtx', 'goretex', 'shadow', 'flyknit', 'react', 'next', 'craft', 'crater', 'jewel',
+]);
+
+// 'exact'   = same model and colourway (style code in the title, or name + colour match)
+// 'similar' = same shoe line, but a different colour/version or we can't confirm it
+function matchLevel(resultTitle, { title, brand, color, styleCode }) {
+  if (containsStyleCode(resultTitle, styleCode)) return 'exact';
+  const words = s => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean));
+  const result = words(resultTitle);
+  const original = words(title);
+
+  if ([...result].some(w => VARIANT_WORDS.has(w) && !original.has(w))) return 'similar';
+  // Without a style code, every distinctive word of the name must be there
+  if (!mentionsProduct(resultTitle, title, brand, 1)) return 'similar';
+
+  // Colour: the result must name one of our colours and no colour we don't have.
+  // Titles without any colour can't be confirmed, so they stay 'similar'.
+  const ours   = new Set([...words(color), ...[...original].filter(w => COLOUR_WORDS.has(w))]);
+  const theirs = [...result].filter(w => COLOUR_WORDS.has(w));
+  if (!ours.size) return 'similar';
+  if (!theirs.some(w => ours.has(w))) return 'similar';
+  if (theirs.some(w => !ours.has(w))) return 'similar';
+  return 'exact';
+}
+
+function toDeal(item, title, size, fxRates, product) {
+  const store     = item.source || '';
+  const extras    = [item.delivery, ...(item.extensions || [])].filter(Boolean).join(' ');
+  const freeShip  = /free (delivery|shipping)/i.test(extras);
+  const shipping  = freeShip ? 0 : extractShippingCost(item.delivery);
+  const rawPrice  = item.extracted_price || parsePrice(item.price);
+  const currency  = detectCurrency(item.price, store);
+  const price     = convertToAUD(rawPrice, currency, fxRates);
+  const merchantUrl = isMerchantUrl(item.link) ? item.link : null;
+  return {
+    storeName:     store,
+    title:         item.title || title,
+    matchLevel:    product ? matchLevel(item.title, product) : 'similar',
+    price,
+    shipping,
+    shippingKnown: shipping != null,
+    freeShipping:  freeShip,
+    total:         Math.round((price + (shipping || 0)) * 100) / 100,
+    delivery:      item.delivery || null,
+    currency,
+    salePercent:   extractSalePercent(item.extensions || []),
+    verified:      isVerified(store),
+    rating:        item.rating || null,
+    reviews:       item.reviews || null,
+    url:           merchantUrl,
+    hasDirectUrl:  !!merchantUrl,
+    googleUrl:     item.product_link || null,
+    image:         item.thumbnail || null,
+    sameSize:      matchesSize(item.title, size),
+    priceVaries:   isResalePlatform(getStoreDomain(store)),
+  };
+}
+
+// Google Shopping often lists one store several times — keep its cheapest exact match,
+// or its cheapest similar one if it has no exact match
+function cheapestPerStore(deals) {
+  const best = new Map();
+  const better = (a, b) => a.matchLevel !== b.matchLevel ? a.matchLevel === 'exact' : a.total < b.total;
+  for (const d of deals) {
+    const key = d.storeName.toLowerCase();
+    if (!best.has(key) || better(d, best.get(key))) best.set(key, d);
+  }
+  return [...best.values()];
+}
+
+// "Easiest" = least hassle buying from this store. Lower score is better.
+// The score is the total price inflated by a percentage for each hassle,
+// so a slightly dearer trusted store with free shipping can beat a cheap risky one.
+function easeScore(deal) {
+  const hassles = [];
+  if (!deal.verified)                 hassles.push(['Less-known store', 0.15]);
+  if (deal.priceVaries)               hassles.push(['Resale marketplace', 0.10]);
+  if (deal.currency !== 'AUD')        hassles.push(['Ships from overseas', 0.10]);
+  if (!deal.shippingKnown)            hassles.push(['Shipping cost unknown', 0.05]);
+  if (!deal.hasDirectUrl)             hassles.push(['Opens a store search', 0.05]);
+  const penalty = hassles.reduce((sum, [, p]) => sum + p, 0);
+  return {
+    easeScore: Math.round(deal.total * (1 + penalty) * 100) / 100,
+    hassles:   hassles.map(([label]) => label),
+  };
+}
+
+// Prices are compared per request, since the cached deals are shared across pages
+function withCurrentPrice(payload, currentPrice, sourceCurrency) {
+  const current = parseFloat(currentPrice);
+  const currentAUD = current > 0
+    ? convertToAUD(current, (sourceCurrency || 'AUD').toUpperCase(), payload.fxRates || {})
+    : null;
+  const ref = referencePrice(payload.deals, currentAUD);
+
+  const deals = payload.deals
+    .map(d => ({
+      ...d,
+      saving: currentAUD ? Math.round((currentAUD - d.total) * 100) / 100 : null,
+      // Unknown stores far below the normal price are a classic sign of fakes/scams
+      tooCheap: !!ref && !d.verified && d.total < ref * TOO_CHEAP_RATIO,
+    }))
+    // Far above the normal price = a different edition, a huge size, or reseller markup
+    .filter(d => !ref || d.total <= ref * TOO_EXPENSIVE_RATIO);
+
+  const hiddenExpensive = payload.deals.length - deals.length;
+  if (hiddenExpensive) console.log(`[StoreScout] Hid ${hiddenExpensive} listings over ${TOO_EXPENSIVE_RATIO}× $${ref}`);
+  return { deals, currentPriceAUD: currentAUD, referencePrice: ref, hiddenExpensive, searchesUsed: payload.searchesUsed };
+}
+
+// The "normal" price to judge others against: this page's price if we know it,
+// otherwise the middle price of the exact matches (or of everything, if none are exact)
+function referencePrice(deals, currentAUD) {
+  if (currentAUD) return currentAUD;
+  const exact = deals.filter(d => d.matchLevel === 'exact');
+  const totals = (exact.length ? exact : deals).map(d => d.total).filter(t => t > 0).sort((a, b) => a - b);
+  if (!totals.length) return null;
+  const mid = Math.floor(totals.length / 2);
+  return totals.length % 2 ? totals[mid] : (totals[mid - 1] + totals[mid]) / 2;
+}
+
+// ── Cache (saved to disk so restarts don't cost searches) ─────────────
+const cache = loadCache();
+
+function loadCache() {
+  try {
+    return new Map(Object.entries(JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'))));
+  } catch {
+    return new Map();
+  }
+}
+function getCached(key) {
+  const e = cache.get(key);
+  if (!e) return null;
+  if (Date.now() - e.ts > CACHE_TTL_MS) { cache.delete(key); return null; }
+  return e.data;
+}
+function setCached(key, data) {
+  cache.set(key, { data, ts: Date.now() });
+  try { fs.writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(cache))); } catch {}
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────
 const STORE_DOMAINS = {
@@ -185,11 +420,18 @@ const STORE_DOMAINS = {
 };
 
 function getStoreDomain(storeName) {
-  const s = (storeName || '').toLowerCase();
+  return knownDomain(storeName) || (storeName || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
+}
+
+// The store's real web address, or null if we'd only be guessing
+function knownDomain(storeName) {
+  const s = (storeName || '').toLowerCase().trim();
   for (const [key, domain] of Object.entries(STORE_DOMAINS)) {
     if (s.includes(key)) return domain;
   }
-  return s.replace(/[^a-z0-9]/g, '') + '.com';
+  // Google sometimes names the store by its address, e.g. "santkicks.com"
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/.test(s)) return s.replace(/^www\./, '');
+  return null;
 }
 
 const RESALE_PLATFORMS = ['goat.com', 'stockx.com', 'flightclub.com', 'novelship.com', 'kickscrew.com'];
@@ -228,7 +470,8 @@ async function fetchPerStoreDirectUrls(query, storeNames, apiKey, size) {
         hl:      'en',
       });
       const res  = await fetch(`https://serpapi.com/search.json?${params}`, {
-        signal: AbortSignal.timeout(4000),
+        // SerpAPI's web search often takes 5–10s; giving up sooner still costs the search
+        signal: AbortSignal.timeout(12000),
       });
       const data = await res.json();
       const hit  = (data.organic_results || []).find(r => {
@@ -255,8 +498,8 @@ function buildQuery(brand, title, identifier, identifierType, gender, color) {
 
   // Only strip numbers that are clearly sizes — require explicit size context
   // e.g. "Size 10", "US 10.5", "UK 9", "EU 44", "10 Men's" — NOT "Pegasus 41" or "Air Max 270"
+  // ("10 Men's" isn't stripped: it can't be told apart from model names like "Air Force 1 '07 Men's")
   q = q.replace(/\b(size\s*|US\s*|UK\s*|EU\s*)\d{1,3}(\.\d)?\b/gi, '');
-  q = q.replace(/\b\d{1,2}(\.\d)?\s*(men'?s?|women'?s?|kids?'?s?)\b/gi, '');
   // Strip gendered descriptors
   q = q.replace(/\b(men'?s?|women'?s?|kids?'?s?|youth|unisex|toddler|infant|adult)\b/gi, '');
   // Strip generic footwear words that add no model identity
@@ -362,35 +605,6 @@ function urlMatchesProduct(url) {
   return !badPatterns.some(p => u.includes(p));
 }
 
-function isCheaper(dealPrice, currentPrice, sourceCurrency, rates) {
-  if (!dealPrice) return false;
-  if (!currentPrice) {
-    console.log(`[StoreScout] No currentPrice detected — cannot filter by price`);
-    return true; // can't compare, let it through
-  }
-  const currentAUD = convertToAUD(parseFloat(currentPrice), (sourceCurrency || 'AUD').toUpperCase(), rates);
-  console.log(`[StoreScout] Price check: deal AUD$${dealPrice} vs current ${sourceCurrency || 'AUD'}$${currentPrice} = AUD$${currentAUD.toFixed(2)} → ${dealPrice < currentAUD ? 'CHEAPER ✓' : 'MORE EXPENSIVE ✗'}`);
-  return dealPrice < currentAUD;
-}
-
-function isSimilarProduct(resultTitle, originalTitle) {
-  if (!resultTitle || !originalTitle) return true;
-
-  const clean = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-  const orig   = clean(originalTitle);
-  const result = clean(resultTitle);
-
-  // Build bigrams (2-word pairs) from the original title
-  const words  = orig.split(' ').filter(w => w.length >= 2);
-  const bigrams = [];
-  for (let i = 0; i < words.length - 1; i++) {
-    bigrams.push(`${words[i]} ${words[i + 1]}`);
-  }
-  if (bigrams.length === 0) return true;
-
-  // At least one bigram from the original must appear in the result title
-  return bigrams.some(bg => result.includes(bg));
-}
 
 function matchesSize(resultTitle, size) {
   if (!size || !resultTitle) return false;
@@ -422,7 +636,7 @@ function extractShippingCost(delivery) {
   return m ? parseFloat(m[1]) : null;
 }
 
-function extractSalePercent(extensions, priceStr, extracted) {
+function extractSalePercent(extensions) {
   for (const ext of extensions) {
     const m = String(ext).match(/(\d+)%\s*off/i);
     if (m) return parseInt(m[1]);
@@ -430,16 +644,15 @@ function extractSalePercent(extensions, priceStr, extracted) {
   return 0;
 }
 
+// Google names stores like "Foot Locker AU" or "Nike.com", so match on the name inside
 function isVerified(storeName) {
-  return VERIFIED_STORES.has(storeName.toLowerCase());
+  const s = (storeName || '').toLowerCase();
+  return [...VERIFIED_STORES].some(v => s.includes(v));
 }
 
-function bestUrl(serpLink, storeName, query) {
-  // Use SerpAPI's link directly if it's already a real merchant URL (not a Google internal URL)
-  if (serpLink && serpLink.startsWith('https://') && !serpLink.includes('google.com')) {
-    return serpLink;
-  }
-  return storeSearchUrl(storeName, query);
+// SerpAPI's link is only useful if it's a real merchant product page, not a Google page
+function isMerchantUrl(link) {
+  return !!link && link.startsWith('https://') && !link.includes('google.') && urlMatchesProduct(link);
 }
 
 function storeSearchUrl(storeName, query) {
@@ -509,13 +722,18 @@ function storeSearchUrl(storeName, query) {
   if (s.includes('above the clouds'))                         return `https://www.abovetheclouds.com/search?q=${q}`;
   if (s.includes('sisters'))                                  return `https://www.sistersandco.com.au/search?q=${q}`;
 
-  // Truly unknown
+  // Truly unknown — a guessed domain is often wrong, so let Google find the store's page
   console.log(`[StoreScout] Unknown store: "${storeName}"`);
-  const domain = (storeName || '').toLowerCase().replace(/[^a-z0-9]/g, '') + '.com.au';
-  return `https://www.${domain}/search?q=${q}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(`${storeName} ${query}`)}`;
 }
 
-app.listen(PORT, () => {
-  console.log(`[StoreScout] Backend running on port ${PORT}`);
-  console.log(`[StoreScout] SerpAPI key: ${SERPAPI_KEY ? 'SET' : 'MISSING'}`);
-});
+// Let tests load the helpers without starting the server
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`[StoreScout] Backend running on http://${HOST}:${PORT}`);
+    console.log(`[StoreScout] SerpAPI key: ${SERPAPI_KEY ? 'SET' : 'MISSING — add it to backend/.env'}`);
+    console.log(`[StoreScout] Token: ${API_TOKEN ? 'required' : 'off'}`);
+  });
+}
+
+module.exports = { app, buildQuery, normalizeBarcode, mentionsProduct, matchLevel, containsStyleCode, filterResults, toDeal, cheapestPerStore, easeScore, withCurrentPrice, isVerified, isMerchantUrl };
