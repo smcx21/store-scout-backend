@@ -17,6 +17,11 @@ const BARCODE_TYPES     = new Set(['gtin', 'gtin8', 'gtin12', 'gtin13', 'gtin14'
 // Extra paid searches to find direct product pages. Off by default: SerpAPI's web search
 // is often too slow to be worth it, and store search pages work without it.
 const MAX_LINK_LOOKUPS  = parseInt(process.env.MAX_LINK_LOOKUPS || '0', 10);
+// Google product pages to open per search (each is one paid search). They add more
+// stores and give direct product links; 0 turns them off.
+// Off by default: in Australia most product pages only list one store, so it's cheaper to
+// fetch a store's direct link when it's clicked (/api/link) than for every store upfront.
+const MAX_PRODUCT_PAGES = parseInt(process.env.MAX_PRODUCT_PAGES || '0', 10);
 const TOO_EXPENSIVE_RATIO = 1.35; // hide listings over 1.35× the normal price (resale sites run ~1.1–1.3×)
 const TOO_CHEAP_RATIO     = 0.6; // flag unknown stores under 0.6× the normal price
 const CACHE_TTL_MS      = 12 * 60 * 60 * 1000;
@@ -104,7 +109,7 @@ app.post('/api/search', async (req, res) => {
 
     const product = { title, brand, color, styleCode };
     const keep = r => containsStyleCode(r.title, styleCode) || mentionsProduct(r.title, title, brand, 0.5);
-    const countExact = rs => rs.filter(r => matchLevel(r.title, product) === 'exact').length;
+    const countExact = rs => rs.filter(r => matchLevel(r.title, product) !== 'similar').length;
 
     // Style code (exact model + colourway), else barcode, pins down the exact product;
     // name + colour finds the rest. Both run at once — SerpAPI can take 20s per search.
@@ -120,9 +125,18 @@ app.post('/api/search', async (req, res) => {
     console.log(`[StoreScout] Title query "${query}" → ${titleResults.length} usable, ${countExact(titleResults)} exact`);
     const results = exactResults.concat(titleResults);
 
+    // Open Google's product page for the best few matches: it lists every store selling
+    // that product, each with a direct link to the store's own product page.
+    const pages = pickProductPages(results, product, MAX_PRODUCT_PAGES);
+    searchesUsed += pages.length;
+    const storeOffers = (await Promise.all(pages.map(productPageOffers)))
+      .flat()
+      .filter(r => filterResults([r], gender).length && keep(r));
+    console.log(`[StoreScout] ${pages.length} product pages → ${storeOffers.length} store offers`);
+
     const fxRates = await fxPromise;
 
-    let deals = cheapestPerStore(results.map(item => toDeal(item, title, size, fxRates, product)));
+    let deals = cheapestPerStore(storeOffers.concat(results).map(item => toDeal(item, title, size, fxRates, product)));
 
     // Only look up direct product pages for the cheapest few stores without one —
     // each lookup is another paid search. A store's address must be known (not guessed)
@@ -154,6 +168,28 @@ app.post('/api/search', async (req, res) => {
 
 const inFlight = new Map();
 
+// ── Direct link for one listing (fetched when the user clicks it) ─────
+app.post('/api/link', async (req, res) => {
+  const { token, storeName } = req.body || {};
+  if (!token) return res.status(400).json({ error: 'Missing token' });
+  if (!SERPAPI_KEY) return res.status(500).json({ error: 'SERPAPI_KEY not set' });
+
+  const key = `link|${token}|${storeName}`.toLowerCase();
+  const cached = getCached(key);
+  if (cached) return res.json(cached);
+
+  const offers = await productPageOffers({ immersive_product_page_token: token });
+  const name = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const offer = offers.find(o => name(o.source) === name(storeName))
+    || offers.find(o => name(o.source).includes(name(storeName)) || name(storeName).includes(name(o.source)));
+  const url = offer && isMerchantUrl(offer.link) ? offer.link : null;
+  console.log(`[StoreScout] Link for ${storeName}: ${url || 'not found'} (${offers.length} stores on page)`);
+
+  const payload = { url: url ? applyAffiliateTag(url, storeName) : null };
+  if (url) setCached(key, payload);
+  res.json(payload);
+});
+
 async function shoppingSearch(q) {
   const params = new URLSearchParams({
     engine:   'google_shopping',
@@ -173,6 +209,62 @@ async function shoppingSearch(q) {
     throw new Error(serpData.error);
   }
   return serpData.shopping_results || [];
+}
+
+// The matching results worth opening Google's product page for: exact before likely,
+// big trusted stores first (their product pages list the most other stores), one per product
+function pickProductPages(results, product, max) {
+  const rank = { exact: 0, likely: 1 };
+  const seen = new Set();
+  return results
+    .map((r, i) => ({ r, i, level: matchLevel(r.title, product) }))
+    .filter(x => x.r.immersive_product_page_token && x.level !== 'similar')
+    .sort((a, b) => rank[a.level] - rank[b.level]
+      || isVerified(b.r.source) - isVerified(a.r.source)
+      || a.i - b.i)
+    .filter(x => {
+      const id = x.r.product_id || x.r.title;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
+    .slice(0, max)
+    .map(x => x.r);
+}
+
+// Every store on Google's product page, shaped like a shopping result
+async function productPageOffers(result) {
+  const params = new URLSearchParams({
+    engine:     'google_immersive_product',
+    page_token: result.immersive_product_page_token,
+    api_key:    SERPAPI_KEY,
+    gl:         'au',
+    hl:         'en',
+  });
+  try {
+    const res  = await fetch(`https://serpapi.com/search.json?${params}`, { signal: AbortSignal.timeout(60000) });
+    const data = await res.json();
+    if (data.error) {
+      if (!/hasn't returned any results/i.test(data.error)) console.log(`[StoreScout] Product page error: ${data.error}`);
+      return [];
+    }
+    return (data.product_results?.stores || []).map(s => ({
+      source:          s.name,
+      title:           s.title || data.product_results.title || result.title,
+      price:           s.price,
+      extracted_price: s.extracted_price,
+      link:            s.link,
+      delivery:        /free/i.test(s.shipping || '') ? 'Free delivery' : (s.shipping ? `${s.shipping} delivery` : null),
+      rating:          s.rating,
+      reviews:         s.reviews,
+      thumbnail:       result.thumbnail,
+      product_link:    result.product_link,
+    }));
+  } catch (err) {
+    // One slow product page shouldn't sink the whole search
+    console.log(`[StoreScout] Product page failed: ${err.message}`);
+    return [];
+  }
 }
 
 // Product pages often pad barcodes to 14 digits ("00198966169739"), which Google
@@ -234,10 +326,13 @@ const COLOUR_WORDS = new Set([
 const VARIANT_WORDS = new Set([
   'premium', 'prm', 'lx', 'lv8', 'se', 'mid', 'high', 'retro', 'og', 'sp', 'qs', 'plus',
   'utility', 'gtx', 'goretex', 'shadow', 'flyknit', 'react', 'next', 'craft', 'crater', 'jewel',
+  'edge', 'platform', 'pltform', 'luxe', 'fontanka', 'wb', 'vintage',
+  'gs', 'ps', 'td',   // kids' sizes (grade school, pre-school, toddler)
 ]);
 
 // 'exact'   = same model and colourway (style code in the title, or name + colour match)
-// 'similar' = same shoe line, but a different colour/version or we can't confirm it
+// 'likely'  = same model, but the listing doesn't say the colour
+// 'similar' = same shoe line, but a different colour/version
 function matchLevel(resultTitle, { title, brand, color, styleCode }) {
   if (containsStyleCode(resultTitle, styleCode)) return 'exact';
   const words = s => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean));
@@ -248,13 +343,12 @@ function matchLevel(resultTitle, { title, brand, color, styleCode }) {
   // Without a style code, every distinctive word of the name must be there
   if (!mentionsProduct(resultTitle, title, brand, 1)) return 'similar';
 
-  // Colour: the result must name one of our colours and no colour we don't have.
-  // Titles without any colour can't be confirmed, so they stay 'similar'.
+  // Colour: naming a colour we don't have means a different colourway.
+  // Listings (or pages) that don't state a colour can't be confirmed either way.
   const ours   = new Set([...words(color), ...[...original].filter(w => COLOUR_WORDS.has(w))]);
   const theirs = [...result].filter(w => COLOUR_WORDS.has(w));
-  if (!ours.size) return 'similar';
-  if (!theirs.some(w => ours.has(w))) return 'similar';
   if (theirs.some(w => !ours.has(w))) return 'similar';
+  if (!ours.size || !theirs.length) return 'likely';
   return 'exact';
 }
 
@@ -285,17 +379,23 @@ function toDeal(item, title, size, fxRates, product) {
     url:           merchantUrl,
     hasDirectUrl:  !!merchantUrl,
     googleUrl:     item.product_link || null,
+    // Lets the popup fetch this listing's direct store link when it's clicked
+    linkToken:     merchantUrl ? null : (item.immersive_product_page_token || null),
     image:         item.thumbnail || null,
     sameSize:      matchesSize(item.title, size),
     priceVaries:   isResalePlatform(getStoreDomain(store)),
   };
 }
 
-// Google Shopping often lists one store several times — keep its cheapest exact match,
-// or its cheapest similar one if it has no exact match
+// Google often lists one store several times — keep its best match, preferring an offer
+// with a direct product link, then the cheapest
+const MATCH_RANK = { exact: 0, likely: 1, similar: 2 };
 function cheapestPerStore(deals) {
   const best = new Map();
-  const better = (a, b) => a.matchLevel !== b.matchLevel ? a.matchLevel === 'exact' : a.total < b.total;
+  const better = (a, b) =>
+    a.matchLevel !== b.matchLevel ? MATCH_RANK[a.matchLevel] < MATCH_RANK[b.matchLevel]
+    : a.hasDirectUrl !== b.hasDirectUrl ? a.hasDirectUrl
+    : a.total < b.total;
   for (const d of deals) {
     const key = d.storeName.toLowerCase();
     if (!best.has(key) || better(d, best.get(key))) best.set(key, d);
@@ -347,7 +447,7 @@ function withCurrentPrice(payload, currentPrice, sourceCurrency) {
 // otherwise the middle price of the exact matches (or of everything, if none are exact)
 function referencePrice(deals, currentAUD) {
   if (currentAUD) return currentAUD;
-  const exact = deals.filter(d => d.matchLevel === 'exact');
+  const exact = deals.filter(d => d.matchLevel !== 'similar');
   const totals = (exact.length ? exact : deals).map(d => d.total).filter(t => t > 0).sort((a, b) => a - b);
   if (!totals.length) return null;
   const mid = Math.floor(totals.length / 2);
